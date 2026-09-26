@@ -1,11 +1,12 @@
 openapi: 3.1.0
 info:
   title: Platform Infrastructure Orchestrator API
-  version: 1.0.0
+  version: 1.1.0
   description: >-
     Authoritative OpenAPI specification for the Platform Infrastructure Orchestrator,
     governing container stack lifecycles, autoscaling simulation, health verification,
-    and cryptographic certificate lifecycle management.
+    disaster recovery backups, platform setup bootstrapping, Cloudflare tunnel ingress,
+    GDPR right-to-erasure workflows, port diagnostics, and cryptographic certificate lifecycle management.
 servers:
   - url: http://localhost:31499/api/v1
     description: Local Platform Orchestrator Daemon
@@ -121,9 +122,22 @@ paths:
     get:
       summary: Run Concurrent Health Checks
       operationId: checkPlatformHealth
+      parameters:
+        - name: primaryHost
+          in: query
+          required: false
+          schema:
+            type: string
+            default: localhost
       responses:
         '200':
-          description: Health check report
+          description: Health check report (All Healthy)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthReportResponse'
+        '503':
+          description: Health check report (Degraded / Unhealthy)
           content:
             application/json:
               schema:
@@ -146,6 +160,164 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GenerateCertsResponse'
+
+  /backup/execute:
+    post:
+      summary: Execute Database Disaster Recovery Backup and Optional Purge
+      operationId: executeBackup
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupExecuteRequest'
+      responses:
+        '200':
+          description: Disaster recovery backup outcome
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackupExecuteResponse'
+        '500':
+          $ref: '#/components/responses/StandardErrorResponse'
+
+  /setup/bootstrap:
+    post:
+      summary: Execute End-to-End 7-Step Bootstrapping Pipeline
+      operationId: bootstrapPlatform
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetupBootstrapRequest'
+      responses:
+        '200':
+          description: Platform setup report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SetupBootstrapResponse'
+        '500':
+          $ref: '#/components/responses/StandardErrorResponse'
+
+  /prereqs/audit:
+    get:
+      summary: Audit Host and Kernel System Prerequisites
+      operationId: auditPrerequisites
+      responses:
+        '200':
+          description: System prerequisites report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrereqAuditResponse'
+
+  /cloudflare/token:
+    post:
+      summary: Configure and Save Cloudflare Tunnel Token
+      operationId: configureCloudflareToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloudflareTokenRequest'
+      responses:
+        '200':
+          description: Token successfully saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CloudflareActionResponse'
+        '400':
+          $ref: '#/components/responses/StandardErrorResponse'
+
+  /cloudflare/start:
+    post:
+      summary: Start Cloudflare Tunnel Ingress Container
+      operationId: startCloudflareTunnel
+      responses:
+        '200':
+          description: Cloudflare Tunnel started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CloudflareActionResponse'
+        '500':
+          $ref: '#/components/responses/StandardErrorResponse'
+
+  /cloudflare/stop:
+    post:
+      summary: Stop Cloudflare Tunnel Ingress Container
+      operationId: stopCloudflareTunnel
+      responses:
+        '200':
+          description: Cloudflare Tunnel stopped
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CloudflareActionResponse'
+
+  /cloudflare/status:
+    get:
+      summary: Get Cloudflare Tunnel Status
+      operationId: getCloudflareStatus
+      responses:
+        '200':
+          description: Cloudflare Tunnel runtime status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CloudflareStatusResponse'
+
+  /gdpr/erasure:
+    post:
+      summary: Execute GDPR and CCPA Right-to-Erasure Workflow
+      operationId: executeGdprErasure
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GdprErasureRequest'
+      responses:
+        '200':
+          description: Data erasure audit outcome
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GdprErasureResponse'
+        '400':
+          $ref: '#/components/responses/StandardErrorResponse'
+        '500':
+          $ref: '#/components/responses/StandardErrorResponse'
+
+  /ports/status:
+    get:
+      summary: Check Availability of Core Platform Ports
+      operationId: checkPortsStatus
+      responses:
+        '200':
+          description: Port contention diagnostic report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortsStatusResponse'
+
+  /ports/free:
+    post:
+      summary: Free and Terminate Conflicting Socket Listeners
+      operationId: freeConflictingPorts
+      responses:
+        '200':
+          description: Conflicting socket listeners freed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortsFreeResponse'
+        '500':
+          $ref: '#/components/responses/StandardErrorResponse'
 
 components:
   responses:
@@ -387,3 +559,219 @@ components:
               type: string
             generated:
               type: boolean
+
+    BackupExecuteRequest:
+      type: object
+      properties:
+        backupOnly:
+          type: boolean
+          default: false
+        purge:
+          type: boolean
+          default: true
+        targetDir:
+          type: string
+
+    BackupExecuteResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            success:
+              type: boolean
+            alloyDbDumpFile:
+              type: string
+            clickHouseDumpFile:
+              type: string
+            volumesPurged:
+              type: boolean
+            message:
+              type: string
+
+    SetupBootstrapRequest:
+      type: object
+      properties:
+        pullImages:
+          type: boolean
+          default: false
+
+    SetupBootstrapResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            totalSteps:
+              type: integer
+            passedSteps:
+              type: integer
+            success:
+              type: boolean
+            steps:
+              type: array
+              items:
+                type: object
+                properties:
+                  index:
+                    type: integer
+                  name:
+                    type: string
+                  passed:
+                    type: boolean
+                  duration:
+                    type: string
+                  description:
+                    type: string
+                  error:
+                    type: string
+            message:
+              type: string
+
+    PrereqAuditResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            passed:
+              type: boolean
+            checks:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  passed:
+                    type: boolean
+                  critical:
+                    type: boolean
+                  message:
+                    type: string
+                  remedyMsg:
+                    type: string
+
+    CloudflareTokenRequest:
+      type: object
+      required:
+        - token
+      properties:
+        token:
+          type: string
+
+    CloudflareActionResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            status:
+              type: string
+            active:
+              type: boolean
+            message:
+              type: string
+
+    CloudflareStatusResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            status:
+              type: string
+
+    GdprErasureRequest:
+      type: object
+      properties:
+        userId:
+          type: string
+        customerId:
+          type: string
+
+    GdprErasureResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            targetId:
+              type: string
+            clickHousePurged:
+              type: boolean
+            alloyDbPurged:
+              type: boolean
+            auditRecorded:
+              type: boolean
+            success:
+              type: boolean
+            message:
+              type: string
+
+    PortsStatusResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            ports:
+              type: array
+              items:
+                type: object
+                properties:
+                  port:
+                    type: integer
+                  available:
+                    type: boolean
+
+    PortsFreeResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            freed:
+              type: boolean
+            message:
+              type: string

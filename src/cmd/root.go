@@ -154,7 +154,19 @@ func Execute() {
 	gdprSvc := gdprService.NewGDPRService(tracer, workspaceRoot)
 	setupSvc := setupService.NewSetupService(prereqSvc, certsSvc, tracer, workspaceRoot)
 
-	restHandler := rest.NewOrchestratorHandler(stackSvc, scaleSvc, healthSvc, certsSvc, workspaceRoot)
+	restHandler := rest.NewOrchestratorHandler(
+		stackSvc,
+		scaleSvc,
+		healthSvc,
+		certsSvc,
+		backupSvc,
+		cloudflareSvc,
+		gdprSvc,
+		prereqSvc,
+		setupSvc,
+		portSvc,
+		workspaceRoot,
+	)
 
 	rootCmd := &cobra.Command{
 		Use:   "llmobs",
