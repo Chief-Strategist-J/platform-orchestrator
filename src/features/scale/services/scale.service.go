@@ -15,10 +15,10 @@ package services
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/scale/rules"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/scale/schema"
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/ports"
 )
 
@@ -44,8 +44,9 @@ func (s *ScaleService) ScaleService(ctx context.Context, cmd schema.ScaleService
 		return fmt.Errorf("replicas must be greater than or equal to 1")
 	}
 
+	resolver := paths.NewPathResolver(s.baseDir)
 	opts := ports.ComposeOptions{
-		ComposeFiles: []string{filepath.Join(s.baseDir, "docker-compose.yml")},
+		ComposeFiles: []string{resolver.ComposeFile("docker-compose.yml")},
 		EnvVars: map[string]string{
 			"CONTAINER_PREFIX": "",
 		},
@@ -66,14 +67,15 @@ func (s *ScaleService) LaunchComputeNode(ctx context.Context, cmd schema.LaunchN
 	meta := rules.DeriveNodeMetadata(cmd)
 	envVars := rules.ConvertPortsToEnv(meta)
 
+	resolver := paths.NewPathResolver(s.baseDir)
 	composeFiles := []string{
-		filepath.Join(s.baseDir, "docker-compose.yml"),
-		filepath.Join(s.baseDir, "docker-compose.stateless.yml"),
+		resolver.ComposeFile("docker-compose.yml"),
+		resolver.ComposeFile("docker-compose.stateless.yml"),
 	}
 
 	profiles := []string{"stateless"}
 	if cmd.EnableCloudflare {
-		cfFile := filepath.Join(s.baseDir, "docker-compose.cloudflare.yml")
+		cfFile := resolver.ComposeFile("docker-compose.cloudflare.yml")
 		composeFiles = append(composeFiles, cfFile)
 		profiles = append(profiles, "cloudflare")
 	}
@@ -98,8 +100,9 @@ func (s *ScaleService) TerminateComputeNode(ctx context.Context, nodeID int) err
 	defer endSpan()
 
 	projectName := fmt.Sprintf("llmobs-compute-%d", nodeID)
+	resolver := paths.NewPathResolver(s.baseDir)
 	opts := ports.ComposeOptions{
-		ComposeFiles: []string{filepath.Join(s.baseDir, "docker-compose.yml")},
+		ComposeFiles: []string{resolver.ComposeFile("docker-compose.yml")},
 		Profiles:     []string{"*"},
 		ProjectName:  projectName,
 	}
@@ -111,8 +114,9 @@ func (s *ScaleService) ListActiveContainers(ctx context.Context) ([]ports.Contai
 	_, endSpan := s.tracer.StartSpan(ctx, "llmobs.scale.list_containers")
 	defer endSpan()
 
+	resolver := paths.NewPathResolver(s.baseDir)
 	opts := ports.ComposeOptions{
-		ComposeFiles: []string{filepath.Join(s.baseDir, "docker-compose.yml")},
+		ComposeFiles: []string{resolver.ComposeFile("docker-compose.yml")},
 		Profiles:     []string{"*"},
 	}
 

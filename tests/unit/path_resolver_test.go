@@ -139,3 +139,58 @@ paths:
 	}
 }
 
+func TestPathResolverSetupConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgDir := filepath.Join(tempDir, "config")
+	if err := os.MkdirAll(cfgDir, 0755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+
+	yamlContent := `
+setup:
+  images:
+    - "custom/image:v1"
+  certificates:
+    - "custom.crt"
+  composeFile: "custom-compose.yml"
+  domains:
+    - "custom.domain"
+  credentials:
+    database:
+      prompt: "Custom DB Password"
+      envKey: "ALLOYDB_PASSWORD"
+      default: "custom_s3cret"
+`
+	if err := os.WriteFile(filepath.Join(cfgDir, "default.yaml"), []byte(yamlContent), 0644); err != nil {
+		t.Fatalf("failed to write yaml: %v", err)
+	}
+
+	resolver := paths.NewPathResolver(tempDir)
+
+	imgs := resolver.GetSetupImages()
+	if len(imgs) != 1 || imgs[0] != "custom/image:v1" {
+		t.Fatalf("expected custom/image:v1, got %v", imgs)
+	}
+
+	certs := resolver.GetSetupCertificates()
+	if len(certs) != 1 || certs[0] != "custom.crt" {
+		t.Fatalf("expected custom.crt, got %v", certs)
+	}
+
+	composeFile := resolver.GetSetupComposeFile()
+	if composeFile != "custom-compose.yml" {
+		t.Fatalf("expected custom-compose.yml, got %s", composeFile)
+	}
+
+	domains := resolver.GetSetupDomains()
+	if len(domains) != 1 || domains[0] != "custom.domain" {
+		t.Fatalf("expected custom.domain, got %v", domains)
+	}
+
+	creds := resolver.GetSetupCredentials()
+	dbCred, ok := creds["database"]
+	if !ok || dbCred.Default != "custom_s3cret" || dbCred.EnvKey != "ALLOYDB_PASSWORD" {
+		t.Fatalf("expected custom database credentials, got %+v", dbCred)
+	}
+}
+

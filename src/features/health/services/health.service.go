@@ -82,6 +82,23 @@ func (s *HealthService) RunHealthChecks(ctx context.Context, targets []schema.Se
 }
 
 func (s *HealthService) probeSingle(ctx context.Context, t schema.ServiceHealthTarget) schema.SingleProbeResult {
+	maxAttempts := 3
+	var lastRes schema.SingleProbeResult
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		lastRes = s.probeOnce(ctx, t)
+		if lastRes.IsHealthy {
+			return lastRes
+		}
+		select {
+		case <-ctx.Done():
+			return lastRes
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return lastRes
+}
+
+func (s *HealthService) probeOnce(ctx context.Context, t schema.ServiceHealthTarget) schema.SingleProbeResult {
 	addr := fmt.Sprintf("%s:%d", t.Host, t.Port)
 	start := time.Now()
 

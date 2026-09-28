@@ -15,9 +15,8 @@ ALGORITHM BLUEPRINT:
 package rules
 
 import (
-	"path/filepath"
-
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/schema"
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
 )
 
 var KnownProfiles = map[string][]string{
@@ -68,7 +67,8 @@ func ResolveProfiles(requested []string) []string {
 }
 
 func SelectComposeFiles(baseDir string, profiles []string) []string {
-	files := []string{filepath.Join(baseDir, schema.DefaultComposeFile)}
+	resolver := paths.NewPathResolver(baseDir)
+	files := []string{resolver.ComposeFile(schema.DefaultComposeFile)}
 
 	isStateless := false
 	isStateful := false
@@ -83,9 +83,9 @@ func SelectComposeFiles(baseDir string, profiles []string) []string {
 	}
 
 	if isStateless {
-		files = append(files, filepath.Join(baseDir, schema.DefaultStatelessComposeFile))
+		files = append(files, resolver.ComposeFile(schema.DefaultStatelessComposeFile))
 	} else if isStateful {
-		files = append(files, filepath.Join(baseDir, schema.DefaultProdComposeFile))
+		files = append(files, resolver.ComposeFile(schema.DefaultProdComposeFile))
 	}
 
 	return files

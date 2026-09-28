@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/ports"
 )
 
@@ -53,11 +54,24 @@ func (d *DockerAdapter) buildArgs(opts ports.ComposeOptions, subcmd string, extr
 	if opts.ProjectName != "" {
 		args = append(args, "-p", opts.ProjectName)
 	}
+	resolver := paths.NewPathResolver(d.baseWorkDir)
+	envFile := resolver.EnvFile()
+	if _, err := os.Stat(envFile); err == nil {
+		args = append(args, "--env-file", envFile)
+	}
 	for _, f := range opts.ComposeFiles {
 		args = append(args, "-f", f)
 	}
-	for _, p := range opts.Profiles {
-		args = append(args, "--profile", p)
+	if len(opts.Profiles) == 0 && (subcmd == "down" || subcmd == "ps") {
+		args = append(args, "--profile", "*")
+	} else {
+		for _, p := range opts.Profiles {
+			if p == "all" {
+				args = append(args, "--profile", "*")
+			} else {
+				args = append(args, "--profile", p)
+			}
+		}
 	}
 	args = append(args, subcmd)
 	args = append(args, extra...)
@@ -95,7 +109,7 @@ func (d *DockerAdapter) runCompose(ctx context.Context, opts ports.ComposeOption
 }
 
 func (d *DockerAdapter) ComposeUp(ctx context.Context, opts ports.ComposeOptions) error {
-	extra := []string{}
+	extra := []string{"--pull", "missing", "--remove-orphans"}
 	if opts.Detach {
 		extra = append(extra, "-d")
 	}
@@ -104,7 +118,8 @@ func (d *DockerAdapter) ComposeUp(ctx context.Context, opts ports.ComposeOptions
 }
 
 func (d *DockerAdapter) ComposeDown(ctx context.Context, opts ports.ComposeOptions) error {
-	_, err := d.runCompose(ctx, opts, "down")
+	extra := []string{"--remove-orphans"}
+	_, err := d.runCompose(ctx, opts, "down", extra...)
 	return err
 }
 
@@ -188,6 +203,9 @@ func (d *DockerAdapter) EnsureNetwork(ctx context.Context, networkName string, s
 	createCmd.Stderr = &stderr
 
 	if err := createCmd.Run(); err != nil {
+		if strings.Contains(stderr.String(), "already exists") {
+			return nil
+		}
 		return fmt.Errorf("failed to create docker network '%s': %w (%s)", networkName, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil

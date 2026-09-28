@@ -27,3 +27,44 @@ paths:
     - "certs"
     - "traefik"
     - "alloydb"
+
+setup:
+  images:
+    - "traefik:v2.10"
+    - "redis:7-alpine"
+    - "apache/kafka:latest"
+    - "grafana/tempo:latest"
+    - "otel/opentelemetry-collector-contrib:latest"
+    - "grafana/grafana:latest"
+  certificates:
+    - "traefik.crt"
+    - "server.pem"
+  composeFile: "docker-compose.yml"
+  domains:
+    - "llmobs.gateway"
+    - "llmobs.grafana"
+    - "llmobs.tempo"
+    - "llmobs.otel"
+    - "llmobs.kafka"
+    - "llmobs.redis"
+  credentials:
+    database:
+      prompt: "Database (AlloyDB) Password"
+      envKey: "ALLOYDB_PASSWORD"
+      default: "llmobs_s3cret_2026"
+      user: "admin"
+      dbName: "llm_observability"
+    redis:
+      prompt: "Redis Password"
+      envKey: "REDIS_PASSWORD"
+      default: "llmobs_redis_s3cret_2024"
+    grafana:
+      prompt: "Grafana Admin Password"
+      envKey: "GF_SECURITY_ADMIN_PASSWORD"
+      default: "llmobs_admin_password"
+      user: "admin"
+    clickhouse:
+      prompt: "ClickHouse Password"
+      envKey: "CLICKHOUSE_PASSWORD"
+      default: "llmobs_clickhouse_s3cret_2026"
+      user: "default"

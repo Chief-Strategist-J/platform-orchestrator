@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/backup/schema"
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/ports"
 )
 
@@ -66,12 +67,14 @@ func (s *BackupService) ExecuteBackupAndPurge(ctx context.Context, opts schema.B
 	}
 
 	if opts.Purge {
+		resolver := paths.NewPathResolver(s.workspaceRoot)
+		composeFile := resolver.ComposeFile("docker-compose.yml")
 		downOpts := ports.ComposeOptions{
-			ComposeFiles: []string{filepath.Join(s.workspaceRoot, "docker-compose.yml")},
+			ComposeFiles: []string{composeFile},
 			Profiles:     []string{"*"},
 			ProjectName:  "llm-obs-infra",
 		}
-		cmd := exec.CommandContext(ctx, "docker", "compose", "-f", filepath.Join(s.workspaceRoot, "docker-compose.yml"), "down", "-v")
+		cmd := exec.CommandContext(ctx, "docker", "compose", "-f", composeFile, "down", "-v")
 		if err := cmd.Run(); err != nil {
 			_ = s.dockerAdapter.ComposeDown(ctx, downOpts)
 		}

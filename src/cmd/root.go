@@ -46,6 +46,8 @@ import (
 	certsSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/certs/schema"
 	certsService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/certs/services"
 	cloudflareService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/cloudflare/services"
+	configSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/config/schema"
+	configService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/config/services"
 	gdprSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/gdpr/schema"
 	gdprService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/gdpr/services"
 	healthSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/health/schema"
@@ -54,6 +56,7 @@ import (
 	prereqsService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/prereqs/services"
 	scaleSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/scale/schema"
 	scaleService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/scale/services"
+	setupSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/setup/schema"
 	setupService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/setup/services"
 	stackSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/schema"
 	stackService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/services"
@@ -140,6 +143,7 @@ func Execute() {
 	cloudflareSvc := cloudflareService.NewCloudflareService(dockerAdapter, tracer, workspaceRoot)
 	gdprSvc := gdprService.NewGDPRService(tracer, workspaceRoot)
 	setupSvc := setupService.NewSetupService(prereqSvc, certsSvc, tracer, workspaceRoot)
+	configSvc := configService.NewConfigService(workspaceRoot, tracer)
 
 	restHandler := rest.NewOrchestratorHandler(
 		stackSvc,
@@ -152,6 +156,7 @@ func Execute() {
 		prereqSvc,
 		setupSvc,
 		portSvc,
+		configSvc,
 		workspaceRoot,
 	)
 
@@ -504,7 +509,36 @@ func Execute() {
 		Short: "Run full 7-step platform bootstrapping pipeline",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			pull, _ := cmd.Flags().GetBool("pull")
-			report, err := setupSvc.RunSetupPipeline(context.Background(), pull)
+			interactive, _ := cmd.Flags().GetBool("interactive")
+			restart, _ := cmd.Flags().GetBool("restart")
+
+			creds := make(map[string]string)
+			if dbPass, _ := cmd.Flags().GetString("db-password"); dbPass != "" {
+				creds["ALLOYDB_PASSWORD"] = dbPass
+			}
+			if redisPass, _ := cmd.Flags().GetString("redis-password"); redisPass != "" {
+				creds["REDIS_PASSWORD"] = redisPass
+			}
+			if grafanaPass, _ := cmd.Flags().GetString("grafana-password"); grafanaPass != "" {
+				creds["GF_SECURITY_ADMIN_PASSWORD"] = grafanaPass
+			}
+			if chPass, _ := cmd.Flags().GetString("clickhouse-password"); chPass != "" {
+				creds["CLICKHOUSE_PASSWORD"] = chPass
+			}
+
+			if interactive && len(creds) == 0 {
+				reader := bufio.NewReader(os.Stdin)
+				creds = setupSvc.PromptCredentialsInteractively(reader)
+			}
+
+			cmdPayload := setupSchema.SetupCommand{
+				PullImages:      pull,
+				Interactive:     interactive,
+				Credentials:     creds,
+				RestartServices: restart,
+			}
+
+			report, err := setupSvc.RunSetupPipeline(context.Background(), cmdPayload)
 			for _, st := range report.Steps {
 				if st.Passed {
 					fmt.Printf("  ✓ [%d/7] %s (%v)\n", st.Index, st.Name, st.Duration.Round(time.Millisecond))
@@ -520,6 +554,12 @@ func Execute() {
 		},
 	}
 	setupCmd.Flags().Bool("pull", false, "Pull Docker images during setup")
+	setupCmd.Flags().BoolP("interactive", "i", false, "Interactively prompt for service credentials (keeps defaults on Enter)")
+	setupCmd.Flags().Bool("restart", true, "Restart running database/cache services on credential update")
+	setupCmd.Flags().String("db-password", "", "Override database (AlloyDB) password directly")
+	setupCmd.Flags().String("redis-password", "", "Override Redis password directly")
+	setupCmd.Flags().String("grafana-password", "", "Override Grafana admin password directly")
+	setupCmd.Flags().String("clickhouse-password", "", "Override ClickHouse password directly")
 
 	cloudflareCmd := &cobra.Command{
 		Use:   "cloudflare [setup|start|stop|status|logs]",
@@ -644,6 +684,74 @@ func Execute() {
 		},
 	}
 
+	var configInteractive bool
+	var configRestart bool
+	var configAlloyDBMem string
+	var configAlloyDBCpus string
+	var configTemporalMem string
+	var configClickHouseMem string
+	var configRedisMem string
+	var configKafkaMem string
+	var configNetworkName string
+
+	configCmd := &cobra.Command{
+		Use:   "config",
+		Short: "View and customize platform resource limits and configurations",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.Background()
+			report, err := configSvc.GetPlatformConfig(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to retrieve configuration: %w", err)
+			}
+
+			if configInteractive {
+				reader := bufio.NewReader(os.Stdin)
+				updateCmd := configSvc.PromptInteractive(reader, report)
+				updated, err := configSvc.UpdatePlatformConfig(ctx, updateCmd)
+				if err != nil {
+					return fmt.Errorf("failed to apply configuration: %w", err)
+				}
+				fmt.Println("\nConfiguration successfully updated!")
+				printConfigReport(updated)
+				return nil
+			}
+
+			if configAlloyDBMem != "" || configAlloyDBCpus != "" || configTemporalMem != "" ||
+				configClickHouseMem != "" || configRedisMem != "" || configKafkaMem != "" || configNetworkName != "" {
+				updateCmd := configSchema.UpdateConfigCommand{
+					RestartServices:  configRestart,
+					AlloyDBMemory:    configAlloyDBMem,
+					AlloyDBCpus:      configAlloyDBCpus,
+					TemporalMemory:   configTemporalMem,
+					ClickHouseMemory: configClickHouseMem,
+					RedisMemory:      configRedisMem,
+					KafkaMemory:      configKafkaMem,
+					NetworkName:      configNetworkName,
+				}
+				updated, err := configSvc.UpdatePlatformConfig(ctx, updateCmd)
+				if err != nil {
+					return fmt.Errorf("failed to apply configuration: %w", err)
+				}
+				fmt.Println("\nConfiguration successfully updated!")
+				printConfigReport(updated)
+				return nil
+			}
+
+			printConfigReport(report)
+			return nil
+		},
+	}
+
+	configCmd.Flags().BoolVarP(&configInteractive, "interactive", "i", false, "Interactive prompt to modify resource limits")
+	configCmd.Flags().BoolVarP(&configRestart, "restart", "r", false, "Restart containers after applying changes")
+	configCmd.Flags().StringVar(&configAlloyDBMem, "alloydb-memory", "", "Set AlloyDB memory limit (e.g. 4096M)")
+	configCmd.Flags().StringVar(&configAlloyDBCpus, "alloydb-cpus", "", "Set AlloyDB CPU limit (e.g. 2.0)")
+	configCmd.Flags().StringVar(&configTemporalMem, "temporal-memory", "", "Set Temporal memory limit (e.g. 2048M)")
+	configCmd.Flags().StringVar(&configClickHouseMem, "clickhouse-memory", "", "Set ClickHouse memory limit (e.g. 4096M)")
+	configCmd.Flags().StringVar(&configRedisMem, "redis-memory", "", "Set Redis memory limit (e.g. 512M)")
+	configCmd.Flags().StringVar(&configKafkaMem, "kafka-memory", "", "Set Kafka memory limit (e.g. 2048M)")
+	configCmd.Flags().StringVar(&configNetworkName, "network-name", "", "Set custom docker network name")
+
 	rootCmd.AddCommand(
 		upCmd,
 		downCmd,
@@ -660,9 +768,33 @@ func Execute() {
 		gdprCmd,
 		verifyCmd,
 		serverCmd,
+		configCmd,
 	)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+func printConfigReport(report *configSchema.PlatformConfigReport) {
+	fmt.Println("\n=======================================================")
+	fmt.Println("       LLMOBS INFRASTRUCTURE CONFIGURATION REPORT      ")
+	fmt.Println("=======================================================")
+	fmt.Printf("Active Env File   : %s\n", report.ActiveEnvFile)
+	fmt.Printf("Compose Spec      : %s\n", report.ComposeFile)
+	fmt.Printf("Platform Network  : %s (subnet: %s, gw: %s)\n", report.NetworkName, report.NetworkSubnet, report.NetworkGateway)
+	fmt.Println("-------------------------------------------------------")
+	fmt.Println("Service Resource Constraints:")
+	fmt.Printf("  AlloyDB (Postgres) : Mem: %s (res: %s) | CPUs: %s\n", report.Resources.AlloyDB.MemoryLimit, report.Resources.AlloyDB.MemoryReservation, report.Resources.AlloyDB.CpusLimit)
+	fmt.Printf("  Temporal Engine    : Mem: %s (res: %s)\n", report.Resources.Temporal.MemoryLimit, report.Resources.Temporal.MemoryReservation)
+	fmt.Printf("  ClickHouse OLAP    : Mem: %s (res: %s)\n", report.Resources.ClickHouse.MemoryLimit, report.Resources.ClickHouse.MemoryReservation)
+	fmt.Printf("  Apache Kafka       : Mem: %s (res: %s)\n", report.Resources.Kafka.MemoryLimit, report.Resources.Kafka.MemoryReservation)
+	fmt.Printf("  Redis Cache        : Mem: %s (res: %s)\n", report.Resources.Redis.MemoryLimit, report.Resources.Redis.MemoryReservation)
+	fmt.Printf("  Traefik Gateway    : Mem: %s (res: %s)\n", report.Resources.Traefik.MemoryLimit, report.Resources.Traefik.MemoryReservation)
+	fmt.Printf("  Grafana UI         : Mem: %s (res: %s)\n", report.Resources.Grafana.MemoryLimit, report.Resources.Grafana.MemoryReservation)
+	fmt.Printf("  OTel Collector     : Mem: %s (res: %s)\n", report.Resources.OTelCollector.MemoryLimit, report.Resources.OTelCollector.MemoryReservation)
+	fmt.Printf("  Tempo Tracing      : Mem: %s (res: %s)\n", report.Resources.Tempo.MemoryLimit, report.Resources.Tempo.MemoryReservation)
+	fmt.Printf("  Service Registry   : Mem: %s (res: %s)\n", report.Resources.ServiceRegistry.MemoryLimit, report.Resources.ServiceRegistry.MemoryReservation)
+	fmt.Println("=======================================================")
+	fmt.Println("Hint: Run 'llmobs config -i' to interactively edit or 'llmobs config --alloydb-memory=4096M --restart'")
 }

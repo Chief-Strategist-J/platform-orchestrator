@@ -22,8 +22,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/rules"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/schema"
@@ -73,9 +75,7 @@ func (s *StackService) ensureStorageDirectories(dataDir string) error {
 		if err := os.MkdirAll(p, 0777); err != nil {
 			return fmt.Errorf("failed to create data dir %s: %w", p, err)
 		}
-		if err := os.Chmod(p, 0777); err != nil {
-			return fmt.Errorf("failed to chmod data dir %s: %w", p, err)
-		}
+		_ = os.Chmod(p, 0777)
 	}
 	return nil
 }
@@ -162,6 +162,8 @@ func (s *StackService) StartStack(ctx context.Context, cmd schema.StackUpCommand
 		}, fmt.Errorf("compose up failed: %w", err)
 	}
 
+	s.healTemporalIfCorrupted(ctx, profiles)
+
 	s.PrintEndpoints(profiles)
 
 	return schema.StackActionOutcome{
@@ -215,6 +217,8 @@ func (s *StackService) RestartStack(ctx context.Context, profiles []string) (sch
 		}, fmt.Errorf("compose restart failed: %w", err)
 	}
 
+	s.healTemporalIfCorrupted(ctx, resolved)
+
 	return schema.StackActionOutcome{
 		Status:         schema.StatusRestarted,
 		Message:        schema.MsgStackRestarted,
@@ -259,4 +263,29 @@ func (s *StackService) PrintEndpoints(profiles []string) {
 		fmt.Printf("  • %-22s: %s\n", ep.Service, ep.Endpoint)
 	}
 	fmt.Println("=====================================================")
+}
+
+func (s *StackService) healTemporalIfCorrupted(ctx context.Context, profiles []string) {
+	hasTemporal := false
+	for _, p := range profiles {
+		if p == schema.ProfileFull || p == schema.ProfileWorkflows || p == schema.ProfileStateless || p == schema.ProfileAll {
+			hasTemporal = true
+			break
+		}
+	}
+	if !hasTemporal {
+		return
+	}
+
+	time.Sleep(2 * time.Second)
+	checkCmd := exec.CommandContext(ctx, "docker", "exec", "llmobs-alloydb-db", "psql", "-U", "admin", "-d", "temporal", "-tAc", "SELECT curr_version FROM schema_version LIMIT 1;")
+	out, err := checkCmd.Output()
+	if err == nil && strings.TrimSpace(string(out)) == "0.0" {
+		countCmd := exec.CommandContext(ctx, "docker", "exec", "llmobs-alloydb-db", "psql", "-U", "admin", "-d", "temporal", "-tAc", "SELECT count(*) FROM namespace_metadata;")
+		countOut, cErr := countCmd.Output()
+		if cErr == nil && strings.TrimSpace(string(countOut)) != "0" {
+			_ = exec.CommandContext(ctx, "docker", "exec", "llmobs-alloydb-db", "psql", "-U", "admin", "-d", "postgres", "-c", "DROP DATABASE IF EXISTS temporal WITH (FORCE);", "-c", "CREATE DATABASE temporal;", "-c", "DROP DATABASE IF EXISTS temporal_visibility WITH (FORCE);", "-c", "CREATE DATABASE temporal_visibility;").Run()
+			_ = exec.CommandContext(ctx, "docker", "restart", "llmobs-temporal-engine").Run()
+		}
+	}
 }

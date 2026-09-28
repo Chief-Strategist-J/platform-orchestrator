@@ -34,6 +34,8 @@ import (
 	certsService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/certs/services"
 	cloudflareSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/cloudflare/schema"
 	cloudflareService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/cloudflare/services"
+	configSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/config/schema"
+	configService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/config/services"
 	gdprSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/gdpr/schema"
 	gdprService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/gdpr/services"
 	healthSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/health/schema"
@@ -42,6 +44,7 @@ import (
 	prereqsService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/prereqs/services"
 	scaleSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/scale/schema"
 	scaleService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/scale/services"
+	setupSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/setup/schema"
 	setupService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/setup/services"
 	stackSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/schema"
 	stackService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/services"
@@ -59,6 +62,7 @@ type OrchestratorHandler struct {
 	prereqService     *prereqsService.PrereqService
 	setupService      *setupService.SetupService
 	portService       *portsService.PortService
+	configService     *configService.ConfigService
 	baseDir           string
 }
 
@@ -73,6 +77,7 @@ func NewOrchestratorHandler(
 	prereqSvc *prereqsService.PrereqService,
 	setupSvc *setupService.SetupService,
 	portSvc *portsService.PortService,
+	configSvc *configService.ConfigService,
 	baseDir string,
 ) *OrchestratorHandler {
 	return &OrchestratorHandler{
@@ -86,6 +91,7 @@ func NewOrchestratorHandler(
 		prereqService:     prereqSvc,
 		setupService:      setupSvc,
 		portService:       portSvc,
+		configService:     configSvc,
 		baseDir:           baseDir,
 	}
 }
@@ -262,17 +268,15 @@ func (h *OrchestratorHandler) HandleBackupExecute(w http.ResponseWriter, r *http
 }
 
 func (h *OrchestratorHandler) HandleSetupBootstrap(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		PullImages bool `json:"pullImages"`
-	}
+	var cmd setupSchema.SetupCommand
 	if r.Body != nil && r.ContentLength != 0 {
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
 			h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
 			return
 		}
 	}
 
-	report, err := h.setupService.RunSetupPipeline(r.Context(), body.PullImages)
+	report, err := h.setupService.RunSetupPipeline(r.Context(), cmd)
 	if err != nil {
 		h.writeJSON(w, http.StatusInternalServerError, types.NewErrorResponse[any]("ERR_SETUP_FAILED", err.Error(), "setup", "v1"))
 		return
@@ -362,4 +366,27 @@ func (h *OrchestratorHandler) HandlePortsFree(w http.ResponseWriter, r *http.Req
 		"freed":   true,
 		"message": "Platform ports verified and conflicting sockets freed",
 	}, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
+	report, err := h.configService.GetPlatformConfig(r.Context())
+	if err != nil {
+		h.writeJSON(w, http.StatusInternalServerError, types.NewErrorResponse[any]("ERR_CONFIG_FETCH", err.Error(), "config", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(report, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) {
+	var cmd configSchema.UpdateConfigCommand
+	if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
+		return
+	}
+	report, err := h.configService.UpdatePlatformConfig(r.Context(), cmd)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_CONFIG_UPDATE", err.Error(), "config", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(report, "v1"))
 }

@@ -35,6 +35,22 @@ import (
 
 var defaultMarkers = []string{"env.schema", "default.yaml", "certs", "traefik", "alloydb"}
 
+type SetupCredentialConfig struct {
+	Prompt  string `yaml:"prompt" json:"prompt"`
+	EnvKey  string `yaml:"envKey" json:"envKey"`
+	Default string `yaml:"default" json:"default"`
+	User    string `yaml:"user,omitempty" json:"user,omitempty"`
+	DBName  string `yaml:"dbName,omitempty" json:"dbName,omitempty"`
+}
+
+type SetupYAMLConfig struct {
+	Images       []string                         `yaml:"images" json:"images"`
+	Certificates []string                         `yaml:"certificates" json:"certificates"`
+	ComposeFile  string                           `yaml:"composeFile" json:"composeFile"`
+	Domains      []string                         `yaml:"domains" json:"domains"`
+	Credentials  map[string]SetupCredentialConfig `yaml:"credentials" json:"credentials"`
+}
+
 type YAMLConfig struct {
 	Server struct {
 		Port         int    `yaml:"port"`
@@ -58,6 +74,7 @@ type YAMLConfig struct {
 	Paths struct {
 		Markers []string `yaml:"markers"`
 	} `yaml:"paths"`
+	Setup SetupYAMLConfig `yaml:"setup"`
 }
 
 type PathResolver struct {
@@ -107,18 +124,30 @@ func DiscoverWorkspaceRoot() string {
 	if err != nil {
 		return "."
 	}
+	curr := dir
 	for {
-		if _, err := os.Stat(filepath.Join(dir, "docker-compose.yml")); err == nil {
-			return dir
+		if _, err := os.Stat(filepath.Join(curr, "go.work")); err == nil {
+			return curr
 		}
-		if _, err := os.Stat(filepath.Join(dir, "go.work")); err == nil {
-			return dir
+		if fi, err := os.Stat(filepath.Join(curr, ".git")); err == nil && fi.IsDir() {
+			return curr
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
+		parent := filepath.Dir(curr)
+		if parent == curr {
 			break
 		}
-		dir = parent
+		curr = parent
+	}
+	curr = dir
+	for {
+		if _, err := os.Stat(filepath.Join(curr, "docker-compose.yml")); err == nil {
+			return curr
+		}
+		parent := filepath.Dir(curr)
+		if parent == curr {
+			break
+		}
+		curr = parent
 	}
 	return "."
 }
@@ -297,23 +326,69 @@ func (r *PathResolver) FindExistingCert(names ...string) (string, error) {
 }
 
 func (r *PathResolver) ComposeFile(filename string) string {
-	return filepath.Join(r.baseDir, filename)
+	cfgDir := r.ConfigDir()
+	packageDir := filepath.Dir(cfgDir)
+	candidates := []string{
+		filepath.Join(packageDir, filename),
+		filepath.Join(packageDir, "compose", filename),
+		filepath.Join(cfgDir, "compose", filename),
+		filepath.Join(cfgDir, filename),
+		filepath.Join(r.baseDir, filename),
+		filepath.Join(r.baseDir, "packages", "platform-orchestrator", filename),
+	}
+	for _, cand := range candidates {
+		if _, err := os.Stat(cand); err == nil {
+			return cand
+		}
+	}
+	return filepath.Join(packageDir, filename)
 }
 
 func (r *PathResolver) EnvFile() string {
-	return filepath.Join(r.baseDir, ".env")
+	cfgDir := r.ConfigDir()
+	packageDir := filepath.Dir(cfgDir)
+	candidates := []string{
+		filepath.Join(packageDir, ".env"),
+		filepath.Join(r.baseDir, ".env"),
+		filepath.Join(r.baseDir, "packages", "platform-orchestrator", ".env"),
+	}
+	for _, cand := range candidates {
+		if _, err := os.Stat(cand); err == nil {
+			return cand
+		}
+	}
+	return filepath.Join(packageDir, ".env")
 }
 
 func (r *PathResolver) EnvExampleFile() string {
-	return filepath.Join(r.baseDir, ".env.example")
+	cfgDir := r.ConfigDir()
+	packageDir := filepath.Dir(cfgDir)
+	candidates := []string{
+		filepath.Join(packageDir, ".env.example"),
+		filepath.Join(r.baseDir, ".env.example"),
+		filepath.Join(r.baseDir, "packages", "platform-orchestrator", ".env.example"),
+	}
+	for _, cand := range candidates {
+		if _, err := os.Stat(cand); err == nil {
+			return cand
+		}
+	}
+	return filepath.Join(packageDir, ".env.example")
 }
 
 func (r *PathResolver) DataDir() string {
-	if env := os.Getenv("LLMOBS_DATA_DIR"); env != "" {
-		return env
+	candidates := []string{
+		filepath.Join(r.baseDir, "data"),
+		filepath.Join(filepath.Dir(r.baseDir), "data"),
+		filepath.Join(filepath.Dir(filepath.Dir(r.baseDir)), "data"),
+	}
+	for _, cand := range candidates {
+		if _, err := os.Stat(cand); err == nil {
+			return cand
+		}
 	}
 	if r.parsedConfig != nil && r.parsedConfig.Orchestrator.DataDir != "" {
-		return filepath.Join(r.baseDir, r.parsedConfig.Orchestrator.DataDir)
+		return filepath.Clean(filepath.Join(r.baseDir, r.parsedConfig.Orchestrator.DataDir))
 	}
 	return filepath.Join(r.baseDir, "data")
 }
@@ -353,6 +428,88 @@ func (r *PathResolver) ResolveNetworkConfig(customName, customSubnet, customGate
 	}
 
 	return name, subnet, gateway
+}
+
+func defaultSetupYAMLConfig() *SetupYAMLConfig {
+	return &SetupYAMLConfig{
+		Images: []string{
+			"traefik:v2.10",
+			"redis:7-alpine",
+			"apache/kafka:latest",
+			"grafana/tempo:latest",
+			"otel/opentelemetry-collector-contrib:latest",
+			"grafana/grafana:latest",
+		},
+		Certificates: []string{
+			"traefik.crt",
+			"server.pem",
+		},
+		ComposeFile: "docker-compose.yml",
+		Domains: []string{
+			"llmobs.gateway",
+			"llmobs.grafana",
+			"llmobs.tempo",
+			"llmobs.otel",
+			"llmobs.kafka",
+			"llmobs.redis",
+		},
+		Credentials: map[string]SetupCredentialConfig{
+			"database": {
+				Prompt:  "Database (AlloyDB) Password",
+				EnvKey:  "ALLOYDB_PASSWORD",
+				Default: "llmobs_s3cret_2026",
+				User:    "admin",
+				DBName:  "llm_observability",
+			},
+			"redis": {
+				Prompt:  "Redis Password",
+				EnvKey:  "REDIS_PASSWORD",
+				Default: "llmobs_redis_s3cret_2024",
+			},
+			"grafana": {
+				Prompt:  "Grafana Admin Password",
+				EnvKey:  "GF_SECURITY_ADMIN_PASSWORD",
+				Default: "llmobs_admin_password",
+				User:    "admin",
+			},
+			"clickhouse": {
+				Prompt:  "ClickHouse Password",
+				EnvKey:  "CLICKHOUSE_PASSWORD",
+				Default: "llmobs_clickhouse_s3cret_2026",
+				User:    "default",
+			},
+		},
+	}
+}
+
+func (r *PathResolver) SetupConfig() *SetupYAMLConfig {
+	if r.parsedConfig != nil && len(r.parsedConfig.Setup.Images) > 0 {
+		return &r.parsedConfig.Setup
+	}
+	return defaultSetupYAMLConfig()
+}
+
+func (r *PathResolver) GetSetupImages() []string {
+	return r.SetupConfig().Images
+}
+
+func (r *PathResolver) GetSetupCertificates() []string {
+	return r.SetupConfig().Certificates
+}
+
+func (r *PathResolver) GetSetupDomains() []string {
+	return r.SetupConfig().Domains
+}
+
+func (r *PathResolver) GetSetupComposeFile() string {
+	if r.SetupConfig().ComposeFile != "" {
+		return r.SetupConfig().ComposeFile
+	}
+	return "docker-compose.yml"
+}
+
+func (r *PathResolver) GetSetupCredentials() map[string]SetupCredentialConfig {
+	return r.SetupConfig().Credentials
 }
 
 func ResolveConfigDir(baseDir string) string {

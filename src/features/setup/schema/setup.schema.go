@@ -28,3 +28,10 @@ type SetupReport struct {
 	Steps       []SetupStep `json:"steps"`
 	Message     string      `json:"message"`
 }
+
+type SetupCommand struct {
+	PullImages      bool              `json:"pullImages"`
+	Interactive     bool              `json:"interactive"`
+	Credentials     map[string]string `json:"credentials,omitempty"`
+	RestartServices bool              `json:"restartServices,omitempty"`
+}

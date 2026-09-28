@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/cloudflare/schema"
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/ports"
 )
 
@@ -70,8 +71,9 @@ func (s *CloudflareService) StartTunnel(ctx context.Context) (*schema.Cloudflare
 	_, end := s.tracer.StartSpan(ctx, "CloudflareService.StartTunnel")
 	defer end()
 
-	base := filepath.Join(s.workspaceRoot, "docker-compose.yml")
-	cf := filepath.Join(s.workspaceRoot, "docker-compose.cloudflare.yml")
+	resolver := paths.NewPathResolver(s.workspaceRoot)
+	base := resolver.ComposeFile("docker-compose.yml")
+	cf := resolver.ComposeFile("docker-compose.cloudflare.yml")
 
 	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", base, "-f", cf, "up", "-d", "llmobs-cloudflare-tunnel")
 	cmd.Dir = s.workspaceRoot
@@ -90,8 +92,9 @@ func (s *CloudflareService) StopTunnel(ctx context.Context) (*schema.CloudflareT
 	_, end := s.tracer.StartSpan(ctx, "CloudflareService.StopTunnel")
 	defer end()
 
-	base := filepath.Join(s.workspaceRoot, "docker-compose.yml")
-	cf := filepath.Join(s.workspaceRoot, "docker-compose.cloudflare.yml")
+	resolver := paths.NewPathResolver(s.workspaceRoot)
+	base := resolver.ComposeFile("docker-compose.yml")
+	cf := resolver.ComposeFile("docker-compose.cloudflare.yml")
 
 	stopCmd := exec.CommandContext(ctx, "docker", "compose", "-f", base, "-f", cf, "stop", "llmobs-cloudflare-tunnel")
 	stopCmd.Dir = s.workspaceRoot
@@ -109,8 +112,9 @@ func (s *CloudflareService) StopTunnel(ctx context.Context) (*schema.CloudflareT
 }
 
 func (s *CloudflareService) GetStatus(ctx context.Context) (string, error) {
-	base := filepath.Join(s.workspaceRoot, "docker-compose.yml")
-	cf := filepath.Join(s.workspaceRoot, "docker-compose.cloudflare.yml")
+	resolver := paths.NewPathResolver(s.workspaceRoot)
+	base := resolver.ComposeFile("docker-compose.yml")
+	cf := resolver.ComposeFile("docker-compose.cloudflare.yml")
 
 	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", base, "-f", cf, "ps", "llmobs-cloudflare-tunnel")
 	cmd.Dir = s.workspaceRoot
@@ -122,8 +126,9 @@ func (s *CloudflareService) GetStatus(ctx context.Context) (string, error) {
 }
 
 func (s *CloudflareService) StreamLogs(ctx context.Context) error {
-	base := filepath.Join(s.workspaceRoot, "docker-compose.yml")
-	cf := filepath.Join(s.workspaceRoot, "docker-compose.cloudflare.yml")
+	resolver := paths.NewPathResolver(s.workspaceRoot)
+	base := resolver.ComposeFile("docker-compose.yml")
+	cf := resolver.ComposeFile("docker-compose.cloudflare.yml")
 
 	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", base, "-f", cf, "logs", "-f", "llmobs-cloudflare-tunnel")
 	cmd.Dir = s.workspaceRoot
