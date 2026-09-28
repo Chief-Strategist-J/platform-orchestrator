@@ -51,6 +51,8 @@ import (
 	configService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/config/services"
 	gdprSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/gdpr/schema"
 	gdprService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/gdpr/services"
+	grafanaSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/schema"
+	grafanaService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/services"
 	healthSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/health/schema"
 	healthService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/health/services"
 	portsService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/ports/services"
@@ -145,6 +147,7 @@ func Execute() {
 	gdprSvc := gdprService.NewGDPRService(tracer, workspaceRoot)
 	setupSvc := setupService.NewSetupService(prereqSvc, certsSvc, tracer, workspaceRoot)
 	configSvc := configService.NewConfigService(workspaceRoot, tracer)
+	grafanaSvc := grafanaService.NewGrafanaService(tracer, workspaceRoot)
 
 	restHandler := rest.NewOrchestratorHandler(
 		stackSvc,
@@ -578,6 +581,87 @@ Examples:
 	deepHealthCmd.Flags().String("grafana-pass", "admin", "Grafana admin password")
 	deepHealthCmd.Flags().String("temporal-ns", "default", "Temporal namespace to verify")
 
+	datasourceCmd := &cobra.Command{
+		Use:     "configure-datasources [services...]",
+		Aliases: []string{"datasource", "datasources", "ds"},
+		Short:   "Dynamically provision and synchronize Grafana data sources",
+		Long: `Dynamically provision, update, and health-check Grafana datasources for platform services.
+
+Available services:
+  alloydb, postgres, db        - AlloyDB (PostgreSQL) relational datasource
+  clickhouse, analytics        - ClickHouse OLAP telemetry analytics datasource
+  redis                        - Redis spend ledger & cache datasource
+  tempo, tracing               - Grafana Tempo distributed tracing datasource
+  all, full                    - Configure all 4 datasources (Default)
+
+Examples:
+  llmobs configure-datasources                           # Configure all data sources
+  llmobs datasource alloydb clickhouse                  # Configure specific data sources
+  llmobs ds --services redis,tempo                      # Comma-separated flag
+  llmobs datasource --grafana-user admin --grafana-pass secret`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.Background()
+
+			grafanaURL, _ := cmd.Flags().GetString("grafana-url")
+			grafanaUser, _ := cmd.Flags().GetString("grafana-user")
+			grafanaPass, _ := cmd.Flags().GetString("grafana-pass")
+			servicesFlag, _ := cmd.Flags().GetString("services")
+			noTest, _ := cmd.Flags().GetBool("no-test")
+			timeoutSec, _ := cmd.Flags().GetInt("timeout")
+
+			var services []string
+			if len(args) > 0 {
+				services = args
+			} else if servicesFlag != "" {
+				for _, s := range strings.Split(servicesFlag, ",") {
+					if t := strings.TrimSpace(s); t != "" {
+						services = append(services, t)
+					}
+				}
+			}
+
+			opts := grafanaSchema.DatasourceSyncOptions{
+				GrafanaURL:     grafanaURL,
+				GrafanaUser:    grafanaUser,
+				GrafanaPass:    grafanaPass,
+				Services:       services,
+				TestConnection: !noTest,
+				Timeout:        time.Duration(timeoutSec) * time.Second,
+			}
+
+			fmt.Println("========================================================================================================================================")
+			fmt.Println(" Grafana Datasource Configuration & Synchronization Pipeline")
+			fmt.Println("========================================================================================================================================")
+
+			report, err := grafanaSvc.SyncDatasources(ctx, opts)
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("%-20s %-15s %8s   %s\n", "DATASOURCE", "STATUS", "LATENCY", "DETAILS / HEALTH")
+			fmt.Println("----------------------------------------------------------------------------------------------------------------------------------------")
+			for _, r := range report.Results {
+				statusLabel := r.Status
+				if !r.IsHealthy {
+					statusLabel = "FAILED"
+				}
+				fmt.Printf("%-20s %-15s %6.1fms   %s\n", r.DatasourceName, statusLabel, r.LatencyMs, r.Message)
+			}
+			fmt.Println("========================================================================================================================================")
+			if report.SuccessCount < report.TotalCount {
+				return fmt.Errorf("failed to configure %d of %d datasources", report.TotalCount-report.SuccessCount, report.TotalCount)
+			}
+			fmt.Printf("✓ Successfully synchronized and verified %d/%d Grafana datasources.\n", report.SuccessCount, report.TotalCount)
+			return nil
+		},
+	}
+	datasourceCmd.Flags().String("grafana-url", "http://localhost:31415", "Grafana server URL")
+	datasourceCmd.Flags().String("grafana-user", "admin", "Grafana admin username")
+	datasourceCmd.Flags().String("grafana-pass", "", "Grafana admin password (default: from .env)")
+	datasourceCmd.Flags().String("services", "", "Comma-separated list of services to configure (e.g. alloydb,clickhouse)")
+	datasourceCmd.Flags().Bool("no-test", false, "Skip connection health test against Grafana API")
+	datasourceCmd.Flags().Int("timeout", 10, "HTTP timeout in seconds")
+
 
 	certsCmd := &cobra.Command{
 		Use:   "certs",
@@ -959,6 +1043,7 @@ Examples:
 		verifyCmd,
 		serverCmd,
 		configCmd,
+		datasourceCmd,
 	)
 
 	if err := rootCmd.Execute(); err != nil {
