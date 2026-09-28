@@ -615,6 +615,43 @@ func (s *GrafanaService) GetAlertRule(ctx context.Context, opts types.ClientOpti
 	return &rule, nil
 }
 
+func (s *GrafanaService) ensureFolderExists(ctx context.Context, client *http.Client, url, user, pass, folderUID string) error {
+	if folderUID == "" {
+		return nil
+	}
+	checkReq, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/api/folders/%s", url, folderUID), nil)
+	if err != nil {
+		return err
+	}
+	checkReq.SetBasicAuth(user, pass)
+	checkResp, err := client.Do(checkReq)
+	if err == nil {
+		defer checkResp.Body.Close()
+		if checkResp.StatusCode == http.StatusOK {
+			return nil
+		}
+	}
+
+	folderTitle := strings.ReplaceAll(folderUID, "-", " ")
+	folderTitle = strings.ReplaceAll(folderTitle, "_", " ")
+	createPayload, _ := json.Marshal(map[string]string{
+		"uid":   folderUID,
+		"title": folderTitle,
+	})
+	createReq, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/api/folders", url), bytes.NewReader(createPayload))
+	if err != nil {
+		return err
+	}
+	createReq.Header.Set("Content-Type", "application/json")
+	createReq.SetBasicAuth(user, pass)
+	createResp, err := client.Do(createReq)
+	if err != nil {
+		return err
+	}
+	defer createResp.Body.Close()
+	return nil
+}
+
 func (s *GrafanaService) CreateOrUpdateAlertRule(ctx context.Context, opts types.ClientOptions, rule schema.AlertRulePayload) (*types.AlertOperationResult, error) {
 	ctx, endSpan := s.tracer.StartSpan(ctx, "grafana.alerts.save_rule")
 	defer endSpan()
@@ -624,15 +661,31 @@ func (s *GrafanaService) CreateOrUpdateAlertRule(ctx context.Context, opts types
 	}
 
 	url, user, pass, client := s.resolveClient(opts)
+	_ = s.ensureFolderExists(ctx, client, url, user, pass, rule.FolderUID)
+
 	bodyBytes, err := json.Marshal(rule)
 	if err != nil {
 		return nil, err
 	}
 
 	start := time.Now()
+	exists := false
+	if rule.UID != "" {
+		checkReq, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/api/v1/provisioning/alert-rules/%s", url, rule.UID), nil)
+		if checkReq != nil {
+			checkReq.SetBasicAuth(user, pass)
+			if checkResp, checkErr := client.Do(checkReq); checkErr == nil {
+				defer checkResp.Body.Close()
+				if checkResp.StatusCode == http.StatusOK {
+					exists = true
+				}
+			}
+		}
+	}
+
 	method := "POST"
 	endpoint := fmt.Sprintf("%s/api/v1/provisioning/alert-rules", url)
-	if rule.UID != "" {
+	if exists && rule.UID != "" {
 		method = "PUT"
 		endpoint = fmt.Sprintf("%s/api/v1/provisioning/alert-rules/%s", url, rule.UID)
 	}
@@ -654,6 +707,26 @@ func (s *GrafanaService) CreateOrUpdateAlertRule(ctx context.Context, opts types
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		if method == "POST" && rule.UID != "" {
+			putReq, putErr := http.NewRequestWithContext(ctx, "PUT", fmt.Sprintf("%s/api/v1/provisioning/alert-rules/%s", url, rule.UID), bytes.NewReader(bodyBytes))
+			if putErr == nil {
+				putReq.Header.Set("Content-Type", "application/json")
+				putReq.SetBasicAuth(user, pass)
+				if putResp, putDoErr := client.Do(putReq); putDoErr == nil {
+					defer putResp.Body.Close()
+					if putResp.StatusCode == http.StatusOK || putResp.StatusCode == http.StatusCreated {
+						return &types.AlertOperationResult{
+							UID:       rule.UID,
+							Title:     rule.Title,
+							Message:   "Alert rule updated successfully",
+							Status:    "SUCCESS",
+							Success:   true,
+							LatencyMs: float64(time.Since(start).Milliseconds()),
+						}, nil
+					}
+				}
+			}
+		}
 		return nil, fmt.Errorf("alert rule save failed (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
