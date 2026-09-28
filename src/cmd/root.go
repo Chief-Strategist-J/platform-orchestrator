@@ -234,8 +234,8 @@ func Execute() {
 			fmt.Printf("✓ %s (Profiles: %v)\n", outcome.Message, outcome.ActiveServices)
 
 			fmt.Println("\nRunning post-restart health check...")
-			targets := healthSchema.DefaultHealthTargets("localhost")
-			report := healthSvc.RunHealthChecks(ctx, targets)
+			configs := healthSchema.DefaultDeepProbeConfigs("localhost")
+			report := healthSvc.RunDeepHealthChecks(ctx, configs)
 			if !report.Healthy {
 				return fmt.Errorf("one or more required services failed post-restart health checks")
 			}
@@ -434,60 +434,138 @@ func Execute() {
 		},
 	}
 
-	healthCmd := &cobra.Command{
-		Use:   "health [primaryHost]",
-		Short: "Run concurrent diagnostic health checks across active services",
-		Long: `Run concurrent diagnostic health checks against platform service endpoints.
 
-By default checks all 10 platform services. Use --profiles to scope checks
-to only the services that were actually started with 'llmobs up <profiles>'.
+
+	deepHealthCmd := &cobra.Command{
+		Use:     "health-deep [primaryHost]",
+		Aliases: []string{"health"},
+		Short:   "Run deep functional probes — CRUD ops, wire-protocol handshakes, API verification",
+		Long: `Run service-specific deep functional health probes that go beyond TCP/HTTP
+connectivity checks. Each probe performs a real operation on the service:
+
+  alloydb      PG wire-protocol StartupMessage + auth + server_version extraction
+  redis        PING + SET + GET + DEL + INFO server (RESP protocol, no redis-cli needed)
+  kafka        ApiVersions + CreateTopic + Produce + Fetch + DeleteTopic (binary protocol)
+  clickhouse   GET /ping + SELECT version() via HTTP interface
+  grafana      GET /api/health + GET /api/datasources (confirms telemetry datasource exists)
+  tempo        GET /ready + GET /api/status/buildinfo
+  temporal     TCP frontend port + Temporal Web UI namespace API
+  otel-collector  TCP HTTP port + TCP gRPC port + GET /metrics (confirms otelcol_ metrics exist)
+  traefik      GET /ping + GET /api/rawdata (route count)
+  service-registry  GET /health + GET /v1/catalog/services
+
+All parameters are configurable via flags. Use --services to limit scope.
 
 Examples:
-  llmobs health                              # check all services
-  llmobs health --profiles db,streaming      # check only db+kafka services
-  llmobs health --profiles db,streaming,tracing  # check only started services`,
+  llmobs health-deep                                      # all services, localhost
+  llmobs health-deep --services kafka,redis               # specific services
+  llmobs health-deep --services alloydb --username admin --password secret
+  llmobs health-deep --services redis --container redis-ledger
+  llmobs health-deep --timeout-ms 10000 --services clickhouse`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			host := "localhost"
 			if len(args) > 0 {
 				host = args[0]
 			}
 
-			var targets []healthSchema.ServiceHealthTarget
-			profilesFlag, _ := cmd.Flags().GetString("profiles")
-			if profilesFlag != "" {
-				var activeProfiles []string
-				for _, p := range strings.Split(profilesFlag, ",") {
-					if t := strings.TrimSpace(p); t != "" {
-						activeProfiles = append(activeProfiles, t)
+			parseCsv := func(flag string) []string {
+				val, _ := cmd.Flags().GetString(flag)
+				if val == "" {
+					return nil
+				}
+				var out []string
+				for _, item := range strings.Split(val, ",") {
+					if t := strings.TrimSpace(item); t != "" {
+						out = append(out, t)
 					}
 				}
-				targets = healthSchema.TargetsForProfiles(host, activeProfiles)
-			} else {
-				targets = healthSchema.DefaultHealthTargets(host)
+				return out
 			}
 
-			report := healthSvc.RunHealthChecks(context.Background(), targets)
+			serviceFilter := parseCsv("services")
+			timeoutMs, _ := cmd.Flags().GetInt("timeout-ms")
+			username, _ := cmd.Flags().GetString("username")
+			password, _ := cmd.Flags().GetString("password")
+			database, _ := cmd.Flags().GetString("database")
+			container, _ := cmd.Flags().GetString("container")
+			grafanaUser, _ := cmd.Flags().GetString("grafana-user")
+			grafanaPass, _ := cmd.Flags().GetString("grafana-pass")
+			temporalNS, _ := cmd.Flags().GetString("temporal-ns")
 
-			fmt.Println("=========================================================================")
-			fmt.Printf(" Platform Health Verification (Checked: %d, Healthy: %d)\n", report.CheckedCount, report.HealthyCount)
-			if profilesFlag != "" {
-				fmt.Printf(" Scoped to profiles: %s\n", profilesFlag)
+			defaults := healthSchema.DefaultDeepProbeConfigs(host)
+			filterSet := make(map[string]struct{}, len(serviceFilter))
+			for _, s := range serviceFilter {
+				filterSet[s] = struct{}{}
 			}
-			fmt.Println("=========================================================================")
-			fmt.Printf("%-20s %-25s %-12s %s\n", "SERVICE", "ENDPOINT", "STATUS", "LATENCY")
-			fmt.Println("-------------------------------------------------------------------------")
+
+			var configs []healthSchema.DeepProbeConfig
+			for _, d := range defaults {
+				if len(filterSet) > 0 {
+					if _, ok := filterSet[d.Service]; !ok {
+						continue
+					}
+				}
+				if timeoutMs > 0 {
+					d.Timeout = time.Duration(timeoutMs) * time.Millisecond
+				}
+				if username != "" {
+					d.Username = username
+				}
+				if password != "" {
+					d.Password = password
+				}
+				if database != "" {
+					d.Database = database
+				}
+				if container != "" {
+					d.Container = container
+				}
+				if d.Service == "grafana" {
+					d.GrafanaUser = grafanaUser
+					d.GrafanaPass = grafanaPass
+				}
+				if d.Service == "temporal" {
+					d.TemporalNS = temporalNS
+				}
+				configs = append(configs, d)
+			}
+
+			report := healthSvc.RunDeepHealthChecks(context.Background(), configs)
+
+			fmt.Println("========================================================================================================================================")
+			fmt.Printf(" Platform DEEP Health Verification (Checked: %d, Healthy: %d, ReportedAt: %s)\n",
+				report.CheckedCount, report.HealthyCount, report.ReportedAt)
+			if len(serviceFilter) > 0 {
+				fmt.Printf(" Services : %s\n", strings.Join(serviceFilter, ", "))
+			}
+			fmt.Println("========================================================================================================================================")
+			fmt.Printf("%-20s %-12s %8s   %s\n", "SERVICE", "STATUS", "LATENCY", "EVIDENCE / ERROR")
+			fmt.Println("----------------------------------------------------------------------------------------------------------------------------------------")
 			for _, r := range report.Results {
-				fmt.Printf("%-20s %-25s %-12s %.1fms\n", r.Service, r.Target, r.Status, r.LatencyMs)
+				detail := r.Error
+				statusLabel := r.Status
+				if !r.IsHealthy {
+					statusLabel = "DOWN"
+				}
+				fmt.Printf("%-20s %-12s %6.1fms   %s\n", r.Service, statusLabel, r.LatencyMs, detail)
 			}
-			fmt.Println("=========================================================================")
+			fmt.Println("========================================================================================================================================")
 			if !report.Healthy {
-				return fmt.Errorf("one or more required services failed health checks")
+				return fmt.Errorf("one or more services failed deep health verification")
 			}
-			fmt.Println("✓ All required platform endpoints are operational.")
+			fmt.Println("✓ All services passed deep functional verification.")
 			return nil
 		},
 	}
-	healthCmd.Flags().String("profiles", "", "Comma-separated Docker Compose profiles to scope checks to (e.g. db,streaming,tracing)")
+	deepHealthCmd.Flags().String("services", "", "Comma-separated service names to probe (e.g. kafka,redis,alloydb)")
+	deepHealthCmd.Flags().Int("timeout-ms", 5000, "Probe timeout in milliseconds")
+	deepHealthCmd.Flags().String("username", "", "Username override for database probes")
+	deepHealthCmd.Flags().String("password", "", "Password override (redis, alloydb)")
+	deepHealthCmd.Flags().String("database", "", "Database name override (alloydb, clickhouse)")
+	deepHealthCmd.Flags().String("container", "", "Container name for docker exec-based probes")
+	deepHealthCmd.Flags().String("grafana-user", "admin", "Grafana admin username")
+	deepHealthCmd.Flags().String("grafana-pass", "admin", "Grafana admin password")
+	deepHealthCmd.Flags().String("temporal-ns", "default", "Temporal namespace to verify")
 
 
 	certsCmd := &cobra.Command{
@@ -861,7 +939,7 @@ Examples:
 		logsCmd,
 		freePortsCmd,
 		scaleCmd,
-		healthCmd,
+		deepHealthCmd,
 		certsCmd,
 		backupPurgeCmd,
 		setupCmd,

@@ -8,7 +8,7 @@ ALGORITHM BLUEPRINT:
 4. Route Coverage:
    - HandleStackUp, HandleStackDown, HandleStackStatus
    - HandleScaleService, HandleScaleNode, HandleTerminateNode
-   - HandleHealth, HandleGenerateCerts
+   - HandleDeepHealth: deep functional probe per service (POST /api/v1/health/deep)
    - HandleBackupExecute: disaster recovery backup and volume purge
    - HandleSetupBootstrap: automated 7-step bootstrapping
    - HandlePrereqsAudit: host and kernel prerequisite auditing
@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	backupSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/backup/schema"
 	backupService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/backup/services"
@@ -228,11 +229,75 @@ func (h *OrchestratorHandler) HandleTerminateNode(w http.ResponseWriter, r *http
 	}, "v1"))
 }
 
-func (h *OrchestratorHandler) HandleHealth(w http.ResponseWriter, r *http.Request) {
-	primaryHost := r.URL.Query().Get("primaryHost")
-	targets := healthSchema.DefaultHealthTargets(primaryHost)
-	report := h.healthService.RunHealthChecks(r.Context(), targets)
+func (h *OrchestratorHandler) HandleDeepHealth(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Services    []string `json:"services,omitempty"`
+		PrimaryHost string   `json:"primaryHost,omitempty"`
+		TimeoutMs   int      `json:"timeoutMs,omitempty"`
+		Overrides   []struct {
+			Service       string `json:"service"`
+			Host          string `json:"host,omitempty"`
+			Port          int    `json:"port,omitempty"`
+			Username      string `json:"username,omitempty"`
+			Password      string `json:"password,omitempty"`
+			Database      string `json:"database,omitempty"`
+			Container     string `json:"container,omitempty"`
+			KafkaTopic    string `json:"kafkaTopic,omitempty"`
+			GrafanaURL    string `json:"grafanaUrl,omitempty"`
+			GrafanaUser   string `json:"grafanaUser,omitempty"`
+			GrafanaPass   string `json:"grafanaPass,omitempty"`
+			TemporalNS    string `json:"temporalNs,omitempty"`
+			OtelGRPCPort  int    `json:"otelGrpcPort,omitempty"`
+			ClickHouseDB  string `json:"clickhouseDb,omitempty"`
+		} `json:"overrides,omitempty"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
+			return
+		}
+	}
 
+	defaults := healthSchema.DefaultDeepProbeConfigs(body.PrimaryHost)
+	filterSet := make(map[string]struct{}, len(body.Services))
+	for _, s := range body.Services {
+		filterSet[s] = struct{}{}
+	}
+
+	var overrides []healthSchema.DeepProbeConfig
+	for _, d := range defaults {
+		if len(filterSet) > 0 {
+			if _, ok := filterSet[d.Service]; !ok {
+				continue
+			}
+		}
+		overrides = append(overrides, d)
+	}
+	for _, o := range body.Overrides {
+		timeout := healthSchema.DeepProbeConfig{}.Timeout
+		if body.TimeoutMs > 0 {
+			timeout = time.Duration(body.TimeoutMs) * time.Millisecond
+		}
+		overrides = append(overrides, healthSchema.DeepProbeConfig{
+			Service:      o.Service,
+			Host:         o.Host,
+			Port:         o.Port,
+			Timeout:      timeout,
+			Username:     o.Username,
+			Password:     o.Password,
+			Database:     o.Database,
+			Container:    o.Container,
+			KafkaTopic:   o.KafkaTopic,
+			GrafanaURL:   o.GrafanaURL,
+			GrafanaUser:  o.GrafanaUser,
+			GrafanaPass:  o.GrafanaPass,
+			TemporalNS:   o.TemporalNS,
+			OtelGRPCPort: o.OtelGRPCPort,
+			ClickHouseDB: o.ClickHouseDB,
+		})
+	}
+
+	report := h.healthService.RunDeepHealthChecks(r.Context(), overrides)
 	status := http.StatusOK
 	if !report.Healthy {
 		status = http.StatusServiceUnavailable

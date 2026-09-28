@@ -10,7 +10,7 @@ ALGORITHM BLUEPRINT:
    - POST /api/v1/scale/service -> HandleScaleService
    - POST /api/v1/scale/node -> HandleScaleNode
    - DELETE /api/v1/scale/node/{nodeId} -> HandleTerminateNode
-   - GET  /api/v1/health -> HandleHealth
+   - POST /api/v1/health/deep -> HandleDeepHealth
    - POST /api/v1/certs/generate -> HandleGenerateCerts
    - POST /api/v1/backup/execute -> HandleBackupExecute
    - POST /api/v1/setup/bootstrap -> HandleSetupBootstrap
@@ -85,9 +85,9 @@ func NewRouter(handler *OrchestratorHandler) http.Handler {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 	})
 
-	mux.HandleFunc("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			handler.HandleHealth(w, r)
+	mux.HandleFunc("/api/v1/health/deep", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			handler.HandleDeepHealth(w, r)
 			return
 		}
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
