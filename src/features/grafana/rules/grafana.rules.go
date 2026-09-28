@@ -1,13 +1,16 @@
 /*
-Package rules provides declarative validation and normalization rules for Grafana datasources.
+Package rules provides declarative validation and normalization rules for Grafana datasources, dashboards, and alerts.
 
 ALGORITHM BLUEPRINT:
 1. NormalizeDatasourcePayload: Ensures essential fields (Name, Type, Access, URL) are populated with valid defaults.
-2. ValidateDatasourcePayload: Evaluates mandatory payload invariants, returning structured validation error messages if constraints are violated.
-3. Invariants:
+2. ValidateDatasourcePayload: Evaluates mandatory payload invariants.
+3. ValidateDashboardPayload: Asserts dashboard object structure and required title metadata.
+4. ValidateAlertRulePayload: Asserts rule title, folder UID, rule group, and condition queries.
+5. ValidateContactPointPayload: Asserts contact point name and supported notification type.
+6. Invariants:
    - Zero inline comments inside function bodies.
    - Access mode defaults to 'proxy' when omitted.
-   - Name and Type must not be blank strings.
+   - All string attributes trimmed of trailing/leading whitespace.
 */
 package rules
 
@@ -45,6 +48,46 @@ func ValidateDatasourcePayload(payload schema.DatasourcePayload) error {
 	}
 	if payload.URL == "" {
 		return fmt.Errorf("datasource URL/address is required")
+	}
+	return nil
+}
+
+func ValidateDashboardPayload(payload schema.DashboardPayload) error {
+	if payload.Dashboard == nil {
+		return fmt.Errorf("dashboard payload must contain a valid 'dashboard' JSON object")
+	}
+	title, _ := payload.Dashboard["title"].(string)
+	if strings.TrimSpace(title) == "" {
+		return fmt.Errorf("dashboard JSON must specify a non-empty 'title' field")
+	}
+	return nil
+}
+
+func ValidateAlertRulePayload(rule schema.AlertRulePayload) error {
+	if strings.TrimSpace(rule.Title) == "" {
+		return fmt.Errorf("alert rule title is required")
+	}
+	if strings.TrimSpace(rule.RuleGroup) == "" {
+		return fmt.Errorf("alert ruleGroup is required")
+	}
+	if strings.TrimSpace(rule.FolderUID) == "" {
+		return fmt.Errorf("alert folderUID is required")
+	}
+	if len(rule.Data) == 0 {
+		return fmt.Errorf("alert rule must contain at least one query/expression data item")
+	}
+	return nil
+}
+
+func ValidateContactPointPayload(cp schema.ContactPointPayload) error {
+	if strings.TrimSpace(cp.Name) == "" {
+		return fmt.Errorf("contact point name is required")
+	}
+	if strings.TrimSpace(cp.Type) == "" {
+		return fmt.Errorf("contact point type is required (e.g. slack, webhook, email, pagerduty, opsgenie, discord)")
+	}
+	if cp.Settings == nil {
+		return fmt.Errorf("contact point settings map is required")
 	}
 	return nil
 }

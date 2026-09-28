@@ -58,6 +58,7 @@ import (
 	prereqsService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/prereqs/services"
 	scaleSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/scale/schema"
 	scaleService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/scale/services"
+	servicesService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/services/services"
 	setupSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/setup/schema"
 	setupService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/setup/services"
 	stackSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/schema"
@@ -147,6 +148,7 @@ func Execute() {
 	setupSvc := setupService.NewSetupService(prereqSvc, certsSvc, tracer, workspaceRoot)
 	configSvc := configService.NewConfigService(workspaceRoot, tracer)
 	grafanaSvc := grafanaService.NewGrafanaService(tracer, workspaceRoot)
+	servicesSvc := servicesService.NewServicesService(tracer, workspaceRoot)
 
 	restHandler := rest.NewOrchestratorHandler(
 		stackSvc,
@@ -161,6 +163,7 @@ func Execute() {
 		portSvc,
 		configSvc,
 		grafanaSvc,
+		servicesSvc,
 		workspaceRoot,
 	)
 
@@ -582,6 +585,9 @@ Examples:
 	deepHealthCmd.Flags().String("temporal-ns", "default", "Temporal namespace to verify")
 
 	datasourceCmd := NewDatasourceCommand(grafanaSvc)
+	dashboardCmd := NewDashboardCommand(grafanaSvc)
+	alertCmd := NewAlertCommand(grafanaSvc)
+	serviceCmd := NewServiceCommand(servicesSvc, grafanaSvc)
 
 
 	certsCmd := &cobra.Command{
@@ -965,6 +971,9 @@ Examples:
 		serverCmd,
 		configCmd,
 		datasourceCmd,
+		dashboardCmd,
+		alertCmd,
+		serviceCmd,
 	)
 
 	if err := rootCmd.Execute(); err != nil {

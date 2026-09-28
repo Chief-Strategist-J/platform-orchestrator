@@ -197,12 +197,18 @@ Examples:
 				SecureJSONData: secureJsonData,
 			}
 
-			res, err := grafanaSvc.CreateDatasource(ctx, payload, !noTest, getClientOpts())
+			res, err := grafanaSvc.CreateDatasource(ctx, getClientOpts(), payload)
 			if err != nil {
 				return fmt.Errorf("failed to create datasource: %w", err)
 			}
 
 			fmt.Printf("✓ %s (UID: %s, Latency: %.1fms)\n", res.Message, res.DatasourceUID, res.LatencyMs)
+			if !noTest && res.DatasourceUID != "" {
+				hRes, hErr := grafanaSvc.TestDatasourceHealth(ctx, getClientOpts(), res.DatasourceUID)
+				if hErr == nil && hRes != nil && hRes.IsHealthy {
+					fmt.Printf("  Connection Health: OK (%s - %.1fms)\n", hRes.Message, hRes.LatencyMs)
+				}
+			}
 			return nil
 		},
 	}
@@ -251,7 +257,7 @@ Examples:
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			ds, err := grafanaSvc.GetDatasource(ctx, args[0], getClientOpts())
+			ds, err := grafanaSvc.GetDatasource(ctx, getClientOpts(), args[0])
 			if err != nil {
 				return err
 			}
@@ -306,12 +312,18 @@ Examples:
 				SecureJSONData: secureJsonData,
 			}
 
-			res, err := grafanaSvc.UpdateDatasource(ctx, idOrUid, payload, !noTest, getClientOpts())
+			res, err := grafanaSvc.UpdateDatasource(ctx, getClientOpts(), idOrUid, payload)
 			if err != nil {
 				return fmt.Errorf("failed to update datasource: %w", err)
 			}
 
 			fmt.Printf("✓ %s (UID: %s, Latency: %.1fms)\n", res.Message, res.DatasourceUID, res.LatencyMs)
+			if !noTest && res.DatasourceUID != "" {
+				hRes, hErr := grafanaSvc.TestDatasourceHealth(ctx, getClientOpts(), res.DatasourceUID)
+				if hErr == nil && hRes != nil && hRes.IsHealthy {
+					fmt.Printf("  Connection Health: OK (%s - %.1fms)\n", hRes.Message, hRes.LatencyMs)
+				}
+			}
 			return nil
 		},
 	}
@@ -331,7 +343,7 @@ Examples:
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			res, err := grafanaSvc.DeleteDatasource(ctx, args[0], getClientOpts())
+			res, err := grafanaSvc.DeleteDatasource(ctx, getClientOpts(), args[0])
 			if err != nil {
 				return err
 			}
@@ -346,7 +358,7 @@ Examples:
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			res, err := grafanaSvc.TestDatasourceHealth(ctx, args[0], getClientOpts())
+			res, err := grafanaSvc.TestDatasourceHealth(ctx, getClientOpts(), args[0])
 			if err != nil {
 				return err
 			}

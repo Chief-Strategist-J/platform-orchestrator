@@ -4,24 +4,15 @@ Package rest implements the HTTP router configuration matching OpenAPI 3.1 contr
 ALGORITHM BLUEPRINT:
 1. RouterRegistration: Binds HTTP method and path patterns to handler methods.
 2. Path Dispatching:
-   - POST /api/v1/stack/up -> HandleStackUp
-   - POST /api/v1/stack/down -> HandleStackDown
-   - GET  /api/v1/stack/status -> HandleStackStatus
-   - POST /api/v1/scale/service -> HandleScaleService
-   - POST /api/v1/scale/node -> HandleScaleNode
-   - DELETE /api/v1/scale/node/{nodeId} -> HandleTerminateNode
-   - POST /api/v1/health/deep -> HandleDeepHealth
-   - POST /api/v1/certs/generate -> HandleGenerateCerts
-   - POST /api/v1/backup/execute -> HandleBackupExecute
-   - POST /api/v1/setup/bootstrap -> HandleSetupBootstrap
-   - GET  /api/v1/prereqs/audit -> HandlePrereqsAudit
-   - POST /api/v1/cloudflare/token -> HandleCloudflareToken
-   - POST /api/v1/cloudflare/start -> HandleCloudflareStart
-   - POST /api/v1/cloudflare/stop -> HandleCloudflareStop
-   - GET  /api/v1/cloudflare/status -> HandleCloudflareStatus
-   - POST /api/v1/gdpr/erasure -> HandleGdprErasure
-   - GET  /api/v1/ports/status -> HandlePortsStatus
-   - POST /api/v1/ports/free -> HandlePortsFree
+   - Core Stack: /api/v1/stack/up, /api/v1/stack/down, /api/v1/stack/status
+   - Scaling: /api/v1/scale/service, /api/v1/scale/node, /api/v1/scale/node/{nodeId}
+   - Diagnostics: /api/v1/health/deep, /api/v1/certs/generate, /api/v1/prereqs/audit, /api/v1/ports/*
+   - Cloudflare & GDPR: /api/v1/cloudflare/*, /api/v1/gdpr/erasure
+   - Configuration & Bootstrap: /api/v1/setup/bootstrap, /api/v1/config
+   - Grafana Datasources: /api/v1/grafana/datasources/*
+   - Grafana Dashboards: /api/v1/grafana/dashboards/*
+   - Grafana Alerting: /api/v1/grafana/alerts/*, /api/v1/grafana/contact-points/*
+   - External Services Catalog: /api/v1/services/*
 3. Invariants:
    - All routes are scoped under /api/v1 prefix.
    - Non-matching methods return 405 Method Not Allowed.
@@ -182,15 +173,14 @@ func NewRouter(handler *OrchestratorHandler) http.Handler {
 	})
 
 	mux.HandleFunc("/api/v1/config", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
 			handler.HandleGetConfig(w, r)
-			return
-		}
-		if r.Method == http.MethodPost {
+		case http.MethodPatch, http.MethodPost:
 			handler.HandleUpdateConfig(w, r)
-			return
+		default:
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		}
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 	})
 
 	mux.HandleFunc("/api/v1/grafana/datasources", func(w http.ResponseWriter, r *http.Request) {
@@ -234,9 +224,132 @@ func NewRouter(handler *OrchestratorHandler) http.Handler {
 		}
 	})
 
+	mux.HandleFunc("/api/v1/grafana/dashboards", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			handler.HandleSearchDashboards(w, r)
+			return
+		}
+		if r.Method == http.MethodPost {
+			handler.HandleSaveDashboard(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+
+	mux.HandleFunc("/api/v1/grafana/dashboards/import", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			handler.HandleImportDashboard(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+
+	mux.HandleFunc("/api/v1/grafana/dashboards/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handler.HandleGetDashboard(w, r)
+		case http.MethodDelete:
+			handler.HandleDeleteDashboard(w, r)
+		default:
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/v1/grafana/alerts", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			handler.HandleListAlertRules(w, r)
+			return
+		}
+		if r.Method == http.MethodPost {
+			handler.HandleSaveAlertRule(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+
+	mux.HandleFunc("/api/v1/grafana/alerts/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handler.HandleGetAlertRule(w, r)
+		case http.MethodDelete:
+			handler.HandleDeleteAlertRule(w, r)
+		default:
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/v1/grafana/contact-points", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			handler.HandleListContactPoints(w, r)
+			return
+		}
+		if r.Method == http.MethodPost {
+			handler.HandleSaveContactPoint(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+
+	mux.HandleFunc("/api/v1/grafana/contact-points/test", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			handler.HandleTestContactPoint(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+
+	mux.HandleFunc("/api/v1/grafana/contact-points/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			handler.HandleDeleteContactPoint(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+
+	mux.HandleFunc("/api/v1/services", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			handler.HandleListServices(w, r)
+			return
+		}
+		if r.Method == http.MethodPost {
+			handler.HandleRegisterService(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+
+	mux.HandleFunc("/api/v1/services/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/health") {
+			if r.Method == http.MethodGet || r.Method == http.MethodPost {
+				handler.HandleTestServiceHealth(w, r)
+				return
+			}
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/sync-to-grafana") {
+			if r.Method == http.MethodPost {
+				handler.HandleSyncServiceToGrafana(w, r)
+				return
+			}
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			handler.HandleGetService(w, r)
+		case http.MethodPut:
+			handler.HandleUpdateService(w, r)
+		case http.MethodDelete:
+			handler.HandleDeleteService(w, r)
+		default:
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, traceparent")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)

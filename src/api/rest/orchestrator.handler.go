@@ -48,6 +48,8 @@ import (
 	prereqsService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/prereqs/services"
 	scaleSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/scale/schema"
 	scaleService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/scale/services"
+	servicesSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/services/schema"
+	servicesService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/services/services"
 	setupSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/setup/schema"
 	setupService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/setup/services"
 	stackSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/schema"
@@ -68,6 +70,7 @@ type OrchestratorHandler struct {
 	portService       *portsService.PortService
 	configService     *configService.ConfigService
 	grafanaService    *grafanaService.GrafanaService
+	servicesService   *servicesService.ServicesService
 	baseDir           string
 }
 
@@ -84,6 +87,7 @@ func NewOrchestratorHandler(
 	portSvc *portsService.PortService,
 	configSvc *configService.ConfigService,
 	grafanaSvc *grafanaService.GrafanaService,
+	servicesSvc *servicesService.ServicesService,
 	baseDir string,
 ) *OrchestratorHandler {
 	return &OrchestratorHandler{
@@ -99,6 +103,7 @@ func NewOrchestratorHandler(
 		portService:       portSvc,
 		configService:     configSvc,
 		grafanaService:    grafanaSvc,
+		servicesService:   servicesSvc,
 		baseDir:           baseDir,
 	}
 }
@@ -464,10 +469,17 @@ func (h *OrchestratorHandler) HandleUpdateConfig(w http.ResponseWriter, r *http.
 
 func (h *OrchestratorHandler) extractClientOptions(r *http.Request) grafanaTypes.ClientOptions {
 	q := r.URL.Query()
+	timeoutSec := 10
+	if tStr := q.Get("timeout"); tStr != "" {
+		if t, err := strconv.Atoi(tStr); err == nil && t > 0 {
+			timeoutSec = t
+		}
+	}
 	return grafanaTypes.ClientOptions{
 		GrafanaURL: q.Get("grafanaUrl"),
 		Username:   q.Get("username"),
 		Password:   q.Get("password"),
+		Timeout:    time.Duration(timeoutSec) * time.Second,
 	}
 }
 
@@ -489,7 +501,7 @@ func (h *OrchestratorHandler) HandleGetDatasource(w http.ResponseWriter, r *http
 		return
 	}
 	opts := h.extractClientOptions(r)
-	ds, err := h.grafanaService.GetDatasource(r.Context(), idOrUid, opts)
+	ds, err := h.grafanaService.GetDatasource(r.Context(), opts, idOrUid)
 	if err != nil {
 		h.writeJSON(w, http.StatusNotFound, types.NewErrorResponse[any]("ERR_GRAFANA_NOT_FOUND", err.Error(), "idOrUid", "v1"))
 		return
@@ -503,9 +515,8 @@ func (h *OrchestratorHandler) HandleCreateDatasource(w http.ResponseWriter, r *h
 		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
 		return
 	}
-	testConn := r.URL.Query().Get("test") != "false"
 	opts := h.extractClientOptions(r)
-	res, err := h.grafanaService.CreateDatasource(r.Context(), payload, testConn, opts)
+	res, err := h.grafanaService.CreateDatasource(r.Context(), opts, payload)
 	if err != nil {
 		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_GRAFANA_CREATE", err.Error(), "datasource", "v1"))
 		return
@@ -524,9 +535,8 @@ func (h *OrchestratorHandler) HandleUpdateDatasource(w http.ResponseWriter, r *h
 		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
 		return
 	}
-	testConn := r.URL.Query().Get("test") != "false"
 	opts := h.extractClientOptions(r)
-	res, err := h.grafanaService.UpdateDatasource(r.Context(), idOrUid, payload, testConn, opts)
+	res, err := h.grafanaService.UpdateDatasource(r.Context(), opts, idOrUid, payload)
 	if err != nil {
 		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_GRAFANA_UPDATE", err.Error(), "datasource", "v1"))
 		return
@@ -541,7 +551,7 @@ func (h *OrchestratorHandler) HandleDeleteDatasource(w http.ResponseWriter, r *h
 		return
 	}
 	opts := h.extractClientOptions(r)
-	res, err := h.grafanaService.DeleteDatasource(r.Context(), idOrUid, opts)
+	res, err := h.grafanaService.DeleteDatasource(r.Context(), opts, idOrUid)
 	if err != nil {
 		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_GRAFANA_DELETE", err.Error(), "datasource", "v1"))
 		return
@@ -557,7 +567,7 @@ func (h *OrchestratorHandler) HandleTestDatasourceHealth(w http.ResponseWriter, 
 		return
 	}
 	opts := h.extractClientOptions(r)
-	res, err := h.grafanaService.TestDatasourceHealth(r.Context(), idOrUid, opts)
+	res, err := h.grafanaService.TestDatasourceHealth(r.Context(), opts, idOrUid)
 	if err != nil {
 		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_GRAFANA_HEALTH", err.Error(), "datasource", "v1"))
 		return
@@ -589,3 +599,296 @@ func (h *OrchestratorHandler) HandleSyncDatasources(w http.ResponseWriter, r *ht
 	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(report, "v1"))
 }
 
+func (h *OrchestratorHandler) HandleSearchDashboards(w http.ResponseWriter, r *http.Request) {
+	opts := h.extractClientOptions(r)
+	q := r.URL.Query()
+	query := q.Get("query")
+	folderUID := q.Get("folder")
+	tag := q.Get("tag")
+
+	results, err := h.grafanaService.SearchDashboards(r.Context(), opts, query, folderUID, tag)
+	if err != nil {
+		h.writeJSON(w, http.StatusInternalServerError, types.NewErrorResponse[any]("ERR_DASHBOARD_SEARCH", err.Error(), "dashboards", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(results, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleGetDashboard(w http.ResponseWriter, r *http.Request) {
+	uid := strings.TrimPrefix(r.URL.Path, "/api/v1/grafana/dashboards/")
+	if uid == "" {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_PARAM", "missing dashboard uid", "uid", "v1"))
+		return
+	}
+	opts := h.extractClientOptions(r)
+	detail, err := h.grafanaService.GetDashboard(r.Context(), opts, uid)
+	if err != nil {
+		h.writeJSON(w, http.StatusNotFound, types.NewErrorResponse[any]("ERR_DASHBOARD_NOT_FOUND", err.Error(), "uid", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(detail, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleSaveDashboard(w http.ResponseWriter, r *http.Request) {
+	var payload grafanaSchema.DashboardPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
+		return
+	}
+	opts := h.extractClientOptions(r)
+	res, err := h.grafanaService.CreateOrUpdateDashboard(r.Context(), opts, payload)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_DASHBOARD_SAVE", err.Error(), "dashboard", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleImportDashboard(w http.ResponseWriter, r *http.Request) {
+	var importOpts grafanaSchema.DashboardImportOptions
+	if err := json.NewDecoder(r.Body).Decode(&importOpts); err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
+		return
+	}
+	opts := h.extractClientOptions(r)
+	res, err := h.grafanaService.ImportDashboard(r.Context(), opts, importOpts)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_DASHBOARD_IMPORT", err.Error(), "dashboard", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleDeleteDashboard(w http.ResponseWriter, r *http.Request) {
+	uid := strings.TrimPrefix(r.URL.Path, "/api/v1/grafana/dashboards/")
+	if uid == "" {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_PARAM", "missing dashboard uid", "uid", "v1"))
+		return
+	}
+	opts := h.extractClientOptions(r)
+	res, err := h.grafanaService.DeleteDashboard(r.Context(), opts, uid)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_DASHBOARD_DELETE", err.Error(), "uid", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleListAlertRules(w http.ResponseWriter, r *http.Request) {
+	opts := h.extractClientOptions(r)
+	list, err := h.grafanaService.ListAlertRules(r.Context(), opts)
+	if err != nil {
+		h.writeJSON(w, http.StatusInternalServerError, types.NewErrorResponse[any]("ERR_ALERTS_LIST", err.Error(), "alerts", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(list, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleGetAlertRule(w http.ResponseWriter, r *http.Request) {
+	uid := strings.TrimPrefix(r.URL.Path, "/api/v1/grafana/alerts/")
+	if uid == "" {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_PARAM", "missing alert rule uid", "uid", "v1"))
+		return
+	}
+	opts := h.extractClientOptions(r)
+	rule, err := h.grafanaService.GetAlertRule(r.Context(), opts, uid)
+	if err != nil {
+		h.writeJSON(w, http.StatusNotFound, types.NewErrorResponse[any]("ERR_ALERT_NOT_FOUND", err.Error(), "uid", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(rule, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleSaveAlertRule(w http.ResponseWriter, r *http.Request) {
+	var rule grafanaSchema.AlertRulePayload
+	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
+		return
+	}
+	opts := h.extractClientOptions(r)
+	res, err := h.grafanaService.CreateOrUpdateAlertRule(r.Context(), opts, rule)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_ALERT_SAVE", err.Error(), "alert", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleDeleteAlertRule(w http.ResponseWriter, r *http.Request) {
+	uid := strings.TrimPrefix(r.URL.Path, "/api/v1/grafana/alerts/")
+	if uid == "" {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_PARAM", "missing alert rule uid", "uid", "v1"))
+		return
+	}
+	opts := h.extractClientOptions(r)
+	res, err := h.grafanaService.DeleteAlertRule(r.Context(), opts, uid)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_ALERT_DELETE", err.Error(), "uid", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleListContactPoints(w http.ResponseWriter, r *http.Request) {
+	opts := h.extractClientOptions(r)
+	list, err := h.grafanaService.ListContactPoints(r.Context(), opts)
+	if err != nil {
+		h.writeJSON(w, http.StatusInternalServerError, types.NewErrorResponse[any]("ERR_CONTACT_POINTS_LIST", err.Error(), "contactPoints", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(list, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleSaveContactPoint(w http.ResponseWriter, r *http.Request) {
+	var cp grafanaSchema.ContactPointPayload
+	if err := json.NewDecoder(r.Body).Decode(&cp); err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
+		return
+	}
+	opts := h.extractClientOptions(r)
+	res, err := h.grafanaService.CreateOrUpdateContactPoint(r.Context(), opts, cp)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_CONTACT_POINT_SAVE", err.Error(), "contactPoint", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleDeleteContactPoint(w http.ResponseWriter, r *http.Request) {
+	uid := strings.TrimPrefix(r.URL.Path, "/api/v1/grafana/contact-points/")
+	if uid == "" {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_PARAM", "missing contact point uid", "uid", "v1"))
+		return
+	}
+	opts := h.extractClientOptions(r)
+	res, err := h.grafanaService.DeleteContactPoint(r.Context(), opts, uid)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_CONTACT_POINT_DELETE", err.Error(), "uid", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleTestContactPoint(w http.ResponseWriter, r *http.Request) {
+	var cp grafanaSchema.ContactPointPayload
+	if err := json.NewDecoder(r.Body).Decode(&cp); err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
+		return
+	}
+	opts := h.extractClientOptions(r)
+	res, err := h.grafanaService.TestContactPoint(r.Context(), opts, cp)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_CONTACT_POINT_TEST", err.Error(), "contactPoint", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleListServices(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	filter := servicesSchema.ServiceFilterOptions{
+		Category: q.Get("category"),
+		Type:     q.Get("type"),
+		Query:    q.Get("query"),
+		Tag:      q.Get("tag"),
+	}
+	list, err := h.servicesService.ListServices(r.Context(), filter)
+	if err != nil {
+		h.writeJSON(w, http.StatusInternalServerError, types.NewErrorResponse[any]("ERR_SERVICES_LIST", err.Error(), "services", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(list, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleGetService(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/services/")
+	id = strings.TrimSuffix(id, "/health")
+	id = strings.TrimSuffix(id, "/sync-to-grafana")
+	if id == "" {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_PARAM", "missing service id", "id", "v1"))
+		return
+	}
+	svc, err := h.servicesService.GetService(r.Context(), id)
+	if err != nil {
+		h.writeJSON(w, http.StatusNotFound, types.NewErrorResponse[any]("ERR_SERVICE_NOT_FOUND", err.Error(), "id", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(svc, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleRegisterService(w http.ResponseWriter, r *http.Request) {
+	var svc servicesSchema.ServiceDefinition
+	if err := json.NewDecoder(r.Body).Decode(&svc); err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
+		return
+	}
+	created, err := h.servicesService.RegisterService(r.Context(), svc)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_SERVICE_REGISTER", err.Error(), "service", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusCreated, types.NewSuccessResponse(created, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleUpdateService(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/services/")
+	if id == "" {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_PARAM", "missing service id", "id", "v1"))
+		return
+	}
+	var patch servicesSchema.ServiceDefinition
+	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
+		return
+	}
+	updated, err := h.servicesService.UpdateService(r.Context(), id, patch)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_SERVICE_UPDATE", err.Error(), "service", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(updated, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleDeleteService(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/services/")
+	if id == "" {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_PARAM", "missing service id", "id", "v1"))
+		return
+	}
+	res, err := h.servicesService.DeleteService(r.Context(), id)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_SERVICE_DELETE", err.Error(), "id", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleTestServiceHealth(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/services/")
+	id = strings.TrimSuffix(id, "/health")
+	if id == "" {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_PARAM", "missing service id", "id", "v1"))
+		return
+	}
+	res, err := h.servicesService.TestServiceHealth(r.Context(), id)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_SERVICE_HEALTH", err.Error(), "id", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleSyncServiceToGrafana(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/services/")
+	id = strings.TrimSuffix(id, "/sync-to-grafana")
+	if id == "" {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_PARAM", "missing service id", "id", "v1"))
+		return
+	}
+	res, err := h.servicesService.SyncToGrafana(r.Context(), id, h.grafanaService)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_SERVICE_GRAFANA_SYNC", err.Error(), "service", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
