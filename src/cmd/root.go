@@ -641,88 +641,104 @@ func Execute() {
 	gdprCmd.Flags().String("customer-id", "", "Target Customer ID for erasure")
 
 	verifyCmd := &cobra.Command{
-		Use:   "verify-credentials [service]",
-		Short: "Verify credentials and connectivity for a local microservice",
-		Long: `Verify credentials and connectivity for a local microservice against the platform infrastructure.
+		Use:   "verify-credentials <label>",
+		Short: "Verify connectivity and credentials for any named target",
+		Long: `Verify connectivity and credentials for any named target against the platform infrastructure.
 
-Defaults are resolved in priority order (highest wins):
-  1. CLI flags (--db-host, --db-port, etc.)
-  2. Service .env  (local-services/<service>/.env)
-  3. Platform .env (packages/platform-orchestrator/.env)
-  4. Built-in fallback defaults
+The <label> is an arbitrary identifier (profile name, service name, env name, etc.).
+No target-to-component mapping is hardcoded. You explicitly declare what to check via --check.
+
+Config resolution priority (highest wins):
+  1. CLI flags        --db-host, --db-port, --redis-pass, etc.
+  2. Target .env      local-services/<label>/.env  (if present)
+  3. Platform .env    packages/platform-orchestrator/.env
+  4. Fallback default (built-in, last resort only)
+
+Available components for --check:
+  db          AlloyDB / PostgreSQL
+  redis       Redis Ledger
+  kafka       Apache Kafka Broker
+  otel        OpenTelemetry Collector (HTTP + gRPC)
+  analytics   ClickHouse Analytics DB
 
 Examples:
-  llmobs verify-credentials user
-  llmobs verify-credentials auth --only db
-  llmobs verify-credentials user --db-port 5433 --kafka-port 9092
-  llmobs verify-credentials audit --only analytics`,
-		Args: cobra.MaximumNArgs(1),
+  llmobs verify-credentials myprofile --check db,redis
+  llmobs verify-credentials staging   --check kafka,otel --kafka-host kafka.staging.internal
+  llmobs verify-credentials prod-auth --check db --db-host 10.0.1.5 --db-port 5432
+  llmobs verify-credentials analytics-svc --check analytics --clickhouse-port 8123
+  llmobs verify-credentials dev         # no --check = runs ALL components`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			service := "user"
-			if len(args) > 0 {
-				service = args[0]
-			}
+			label := args[0]
 
 			platformEnv := loadEnvFile(filepath.Join(workspaceRoot, "packages", "platform-orchestrator", ".env"))
-			svcEnv := loadEnvFile(filepath.Join(workspaceRoot, "local-services", service, ".env"))
-			if len(svcEnv) == 0 {
-				svcEnv = loadEnvFile(filepath.Join(workspaceRoot, "local-services", service, ".env.example"))
+			targetEnv := loadEnvFile(filepath.Join(workspaceRoot, "local-services", label, ".env"))
+			if len(targetEnv) == 0 {
+				targetEnv = loadEnvFile(filepath.Join(workspaceRoot, "local-services", label, ".env.example"))
 			}
 
-			resolveCfg := func(flagName, svcKey, platformKey, fallback string) string {
-				if v, _ := cmd.Flags().GetString(flagName); cmd.Flags().Changed(flagName) && v != "" {
-					return v
+			resolveCfg := func(flagName, targetKey, platformKey, fallback string) string {
+				if cmd.Flags().Changed(flagName) {
+					if v, _ := cmd.Flags().GetString(flagName); v != "" {
+						return v
+					}
 				}
-				if v := svcEnv[svcKey]; v != "" {
-					return v
+				if targetKey != "" {
+					if v := targetEnv[targetKey]; v != "" {
+						return v
+					}
 				}
-				if v := platformEnv[platformKey]; v != "" {
-					return v
+				if platformKey != "" {
+					if v := platformEnv[platformKey]; v != "" {
+						return v
+					}
 				}
 				return fallback
 			}
 
-			prefix := strings.ToUpper(strings.ReplaceAll(service, "-", "_"))
+			env := strings.ToUpper(strings.ReplaceAll(label, "-", "_"))
+
+			checkList, _ := cmd.Flags().GetString("check")
 
 			cfg := verifyConfig{
-				Service:       service,
-				Only:          mustGetString(cmd, "only"),
-				DBHost:        resolveCfg("db-host", prefix+"_DB_HOST", "ALLOYDB_HOST", "localhost"),
-				DBPort:        resolveCfg("db-port", prefix+"_DB_PORT", "PORT_ALLOYDB", "31420"),
-				DBUser:        resolveCfg("db-user", prefix+"_DB_USER", "ALLOYDB_USER", "admin"),
-				DBPass:        resolveCfg("db-pass", prefix+"_DB_PASSWORD", "ALLOYDB_PASSWORD", ""),
-				DBName:        resolveCfg("db-name", prefix+"_DB_NAME", "ALLOYDB_DB", "llm_observability"),
-				DBContainer:   resolveCfg("db-container", "", "", "llmobs-alloydb-db"),
-				RedisHost:     resolveCfg("redis-host", prefix+"_REDIS_HOST", "REDIS_HOST", "localhost"),
-				RedisPort:     resolveCfg("redis-port", prefix+"_REDIS_PORT", "PORT_REDIS", "31413"),
-				RedisPass:     resolveCfg("redis-pass", prefix+"_REDIS_PASSWORD", "REDIS_PASSWORD", ""),
-				RedisContainer: resolveCfg("redis-container", "", "", "llmobs-redis-ledger"),
-				KafkaHost:     resolveCfg("kafka-host", prefix+"_KAFKA_HOST", "KAFKA_HOST", "localhost"),
-				KafkaPort:     resolveCfg("kafka-port", prefix+"_KAFKA_PORT", "PORT_KAFKA", "31414"),
-				OtelHTTPPort:  resolveCfg("otel-http-port", prefix+"_OTEL_HTTP_PORT", "PORT_OTEL_HTTP", "31417"),
-				OtelGRPCPort:  resolveCfg("otel-grpc-port", prefix+"_OTEL_GRPC_PORT", "PORT_OTEL_GRPC", "31418"),
-				ClickHousePort: resolveCfg("clickhouse-port", prefix+"_CLICKHOUSE_PORT", "PORT_CLICKHOUSE_HTTP", "31421"),
+				Label:          label,
+				Components:     checkList,
+				DBHost:         resolveCfg("db-host",         env+"_DB_HOST",         "ALLOYDB_HOST",         "localhost"),
+				DBPort:         resolveCfg("db-port",         env+"_DB_PORT",         "PORT_ALLOYDB",         "31420"),
+				DBUser:         resolveCfg("db-user",         env+"_DB_USER",         "ALLOYDB_USER",         "admin"),
+				DBPass:         resolveCfg("db-pass",         env+"_DB_PASSWORD",     "ALLOYDB_PASSWORD",     ""),
+				DBName:         resolveCfg("db-name",         env+"_DB_NAME",         "ALLOYDB_DB",           "llm_observability"),
+				DBContainer:    resolveCfg("db-container",    "",                     "",                     "llmobs-alloydb-db"),
+				RedisHost:      resolveCfg("redis-host",      env+"_REDIS_HOST",      "REDIS_HOST",           "localhost"),
+				RedisPort:      resolveCfg("redis-port",      env+"_REDIS_PORT",      "PORT_REDIS",           "31413"),
+				RedisPass:      resolveCfg("redis-pass",      env+"_REDIS_PASSWORD",  "REDIS_PASSWORD",       ""),
+				RedisContainer: resolveCfg("redis-container", "",                     "",                     "llmobs-redis-ledger"),
+				KafkaHost:      resolveCfg("kafka-host",      env+"_KAFKA_HOST",      "KAFKA_HOST",           "localhost"),
+				KafkaPort:      resolveCfg("kafka-port",      env+"_KAFKA_PORT",      "PORT_KAFKA",           "31414"),
+				OtelHTTPPort:   resolveCfg("otel-http-port",  env+"_OTEL_HTTP_PORT",  "PORT_OTEL_HTTP",       "31417"),
+				OtelGRPCPort:   resolveCfg("otel-grpc-port",  env+"_OTEL_GRPC_PORT",  "PORT_OTEL_GRPC",       "31418"),
+				ClickHousePort: resolveCfg("clickhouse-port", env+"_CLICKHOUSE_PORT", "PORT_CLICKHOUSE_HTTP", "31421"),
 			}
 
 			return verifyNativeCredentials(cfg)
 		},
 	}
-	verifyCmd.Flags().String("only", "all", "Scope verification to one component: all | db | redis | kafka | otel | analytics")
-	verifyCmd.Flags().String("db-host", "", "Override database host")
-	verifyCmd.Flags().String("db-port", "", "Override database port")
-	verifyCmd.Flags().String("db-user", "", "Override database username")
-	verifyCmd.Flags().String("db-pass", "", "Override database password")
-	verifyCmd.Flags().String("db-name", "", "Override database name")
-	verifyCmd.Flags().String("db-container", "", "Override AlloyDB Docker container name for exec fallback")
-	verifyCmd.Flags().String("redis-host", "", "Override Redis host")
-	verifyCmd.Flags().String("redis-port", "", "Override Redis port")
-	verifyCmd.Flags().String("redis-pass", "", "Override Redis password")
-	verifyCmd.Flags().String("redis-container", "", "Override Redis Docker container name")
-	verifyCmd.Flags().String("kafka-host", "", "Override Kafka broker host")
-	verifyCmd.Flags().String("kafka-port", "", "Override Kafka broker port")
-	verifyCmd.Flags().String("otel-http-port", "", "Override OTel Collector HTTP port")
-	verifyCmd.Flags().String("otel-grpc-port", "", "Override OTel Collector gRPC port")
-	verifyCmd.Flags().String("clickhouse-port", "", "Override ClickHouse HTTP port")
+	verifyCmd.Flags().String("check", "", "Comma-separated components to verify (default: all). e.g. db,redis or kafka,otel")
+	verifyCmd.Flags().String("db-host", "", "Database host")
+	verifyCmd.Flags().String("db-port", "", "Database port")
+	verifyCmd.Flags().String("db-user", "", "Database username")
+	verifyCmd.Flags().String("db-pass", "", "Database password")
+	verifyCmd.Flags().String("db-name", "", "Database name")
+	verifyCmd.Flags().String("db-container", "", "AlloyDB Docker container name (for exec-based auth fallback)")
+	verifyCmd.Flags().String("redis-host", "", "Redis host")
+	verifyCmd.Flags().String("redis-port", "", "Redis port")
+	verifyCmd.Flags().String("redis-pass", "", "Redis password")
+	verifyCmd.Flags().String("redis-container", "", "Redis Docker container name")
+	verifyCmd.Flags().String("kafka-host", "", "Kafka broker host")
+	verifyCmd.Flags().String("kafka-port", "", "Kafka broker port")
+	verifyCmd.Flags().String("otel-http-port", "", "OTel Collector HTTP port")
+	verifyCmd.Flags().String("otel-grpc-port", "", "OTel Collector gRPC port")
+	verifyCmd.Flags().String("clickhouse-port", "", "ClickHouse HTTP port")
 
 	serverCmd := &cobra.Command{
 		Use:   "server",
@@ -881,8 +897,8 @@ func loadEnvFile(path string) map[string]string {
 }
 
 type verifyConfig struct {
-	Service        string
-	Only           string
+	Label          string
+	Components     string
 	DBHost         string
 	DBPort         string
 	DBUser         string
@@ -901,26 +917,12 @@ type verifyConfig struct {
 }
 
 func verifyNativeCredentials(cfg verifyConfig) error {
-	serviceComponents := map[string][]string{
-		"user":          {"db", "redis", "kafka", "otel"},
-		"auth":          {"db", "redis"},
-		"audit":         {"db", "redis", "kafka", "analytics", "otel"},
-		"notifications": {"db", "redis", "kafka", "otel"},
-		"payment":       {"db", "redis", "kafka"},
-		"storage":       {"db", "redis", "otel"},
-	}
-
-	components, ok := serviceComponents[cfg.Service]
-	if !ok {
-		components = []string{"db", "redis"}
-	}
-
 	want := func(c string) bool {
-		if cfg.Only != "all" && cfg.Only != "" && cfg.Only != c {
-			return false
+		if cfg.Components == "" {
+			return true
 		}
-		for _, x := range components {
-			if x == c {
+		for _, item := range strings.Split(cfg.Components, ",") {
+			if strings.TrimSpace(item) == c {
 				return true
 			}
 		}
@@ -928,9 +930,11 @@ func verifyNativeCredentials(cfg verifyConfig) error {
 	}
 
 	fmt.Printf("\n\033[94m====================================================\033[0m\n")
-	fmt.Printf("\033[1m CREDENTIAL VERIFICATION: %s SERVICE\033[0m\n", strings.ToUpper(cfg.Service))
-	if cfg.Only != "all" && cfg.Only != "" {
-		fmt.Printf("\033[93m Filter: --only %s\033[0m\n", cfg.Only)
+	fmt.Printf("\033[1m CREDENTIAL VERIFICATION: %s\033[0m\n", strings.ToUpper(cfg.Label))
+	if cfg.Components != "" {
+		fmt.Printf("\033[93m Checking: %s\033[0m\n", cfg.Components)
+	} else {
+		fmt.Printf("\033[93m Checking: all components\033[0m\n")
 	}
 	fmt.Printf("\033[94m====================================================\033[0m\n\n")
 
