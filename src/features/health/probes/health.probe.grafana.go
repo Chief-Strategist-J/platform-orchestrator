@@ -54,13 +54,17 @@ func ProbeGrafana(cfg schema.DeepProbeConfig) schema.SingleProbeResult {
 
 	var healthResp *http.Response
 	var err error
-	for attempt := 1; attempt <= 4; attempt++ {
+	deadline := start.Add(timeout)
+	for {
 		healthResp, err = client.Get(grafanaURL + "/api/health")
 		if err == nil && healthResp.StatusCode < 500 {
 			break
 		}
 		if healthResp != nil {
 			healthResp.Body.Close()
+		}
+		if time.Now().After(deadline) {
+			break
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
@@ -84,13 +88,19 @@ func ProbeGrafana(cfg schema.DeepProbeConfig) schema.SingleProbeResult {
 	}
 	defer dsResp.Body.Close()
 
-	if dsResp.StatusCode == 401 && grafanaPass != "llmobs_admin_password" {
+	if dsResp.StatusCode == 401 {
+		fallbackPass := "admin"
+		if grafanaPass == "admin" {
+			fallbackPass = "llmobs_admin_password"
+		}
 		reqRetry, _ := http.NewRequest("GET", grafanaURL+"/api/datasources", nil)
-		reqRetry.SetBasicAuth(grafanaUser, "llmobs_admin_password")
-		if retryResp, err := client.Do(reqRetry); err == nil {
+		reqRetry.SetBasicAuth(grafanaUser, fallbackPass)
+		if retryResp, err := client.Do(reqRetry); err == nil && retryResp.StatusCode == 200 {
 			dsResp.Body.Close()
 			dsResp = retryResp
 			defer dsResp.Body.Close()
+		} else if retryResp != nil {
+			retryResp.Body.Close()
 		}
 	}
 
