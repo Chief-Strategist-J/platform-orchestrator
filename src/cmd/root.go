@@ -30,6 +30,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -657,7 +658,7 @@ func Execute() {
 					pyCmd.Stderr = os.Stderr
 					return pyCmd.Run()
 				}
-				return fmt.Errorf("verify-credentials script not found for service '%s'", service)
+				return verifyNativeCredentials(service, workspaceRoot)
 			}
 			shCmd := exec.Command("bash", append([]string{scriptPath}, args[1:]...)...)
 			shCmd.Dir = filepath.Dir(scriptPath)
@@ -797,4 +798,62 @@ func printConfigReport(report *configSchema.PlatformConfigReport) {
 	fmt.Printf("  Service Registry   : Mem: %s (res: %s)\n", report.Resources.ServiceRegistry.MemoryLimit, report.Resources.ServiceRegistry.MemoryReservation)
 	fmt.Println("=======================================================")
 	fmt.Println("Hint: Run 'llmobs config -i' to interactively edit or 'llmobs config --alloydb-memory=4096M --restart'")
+}
+
+func verifyNativeCredentials(service string, workspaceRoot string) error {
+	fmt.Printf("\nVerifying credentials for service '%s'...\n", service)
+	svcDir := filepath.Join(workspaceRoot, "local-services", service)
+	envMap := make(map[string]string)
+	loadEnvMap := func(filename string) {
+		p := filepath.Join(svcDir, filename)
+		if data, err := os.ReadFile(p); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+					continue
+				}
+				parts := strings.SplitN(trimmed, "=", 2)
+				if len(parts) == 2 {
+					envMap[strings.TrimSpace(parts[0])] = strings.Trim(strings.TrimSpace(parts[1]), `"' `)
+				}
+			}
+		}
+	}
+	loadEnvMap(".env.example")
+	loadEnvMap(".env")
+
+	alloyOut, err := exec.Command("docker", "exec", "llmobs-alloydb-db", "psql", "-U", "admin", "-d", "postgres", "-c", "SELECT 1;").CombinedOutput()
+	if err == nil {
+		fmt.Printf("  \033[92m[PASS]\033[0m AlloyDB (PostgreSQL) -> Database connection authenticated\n")
+	} else {
+		fmt.Printf("  \033[91m[FAIL]\033[0m AlloyDB (PostgreSQL) -> Connection failed: %s\n", strings.TrimSpace(string(alloyOut)))
+	}
+
+	redisPass := envMap["USER_REDIS_PASSWORD"]
+	if redisPass == "" {
+		redisPass = "llmobs_redis_s3cret_2024"
+	}
+	redisCmd := exec.Command("docker", "exec", "llmobs-redis-ledger", "redis-cli", "-a", redisPass, "ping")
+	redisOut, rErr := redisCmd.CombinedOutput()
+	if rErr == nil && strings.Contains(string(redisOut), "PONG") {
+		fmt.Printf("  \033[92m[PASS]\033[0m Redis Ledger -> Authentication successful (PONG received)\n")
+	} else {
+		rCmd2 := exec.Command("docker", "exec", "llmobs-redis-ledger", "redis-cli", "ping")
+		rOut2, rErr2 := rCmd2.CombinedOutput()
+		if rErr2 == nil && strings.Contains(string(rOut2), "PONG") {
+			fmt.Printf("  \033[92m[PASS]\033[0m Redis Ledger -> Connected without password\n")
+		} else {
+			fmt.Printf("  \033[91m[FAIL]\033[0m Redis Ledger -> Authentication failed: %s\n", strings.TrimSpace(string(redisOut)))
+		}
+	}
+
+	conn, kErr := net.DialTimeout("tcp", "localhost:31414", 2*time.Second)
+	if kErr == nil {
+		_ = conn.Close()
+		fmt.Printf("  \033[92m[PASS]\033[0m Kafka Broker -> TCP connection verified (localhost:31414)\n")
+	} else {
+		fmt.Printf("  \033[91m[FAIL]\033[0m Kafka Broker -> Connection failed: %v\n", kErr)
+	}
+
+	return nil
 }
