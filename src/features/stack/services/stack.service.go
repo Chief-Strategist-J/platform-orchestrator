@@ -268,7 +268,7 @@ func (s *StackService) PrintEndpoints(profiles []string) {
 func (s *StackService) healTemporalIfCorrupted(ctx context.Context, profiles []string) {
 	hasTemporal := false
 	for _, p := range profiles {
-		if p == schema.ProfileFull || p == schema.ProfileWorkflows || p == schema.ProfileStateless || p == schema.ProfileAll {
+		if p == schema.ProfileFull || p == schema.ProfileWorkflows || p == schema.ProfileStateless || p == schema.ProfileAll || p == schema.ProfileTemporal {
 			hasTemporal = true
 			break
 		}
@@ -278,14 +278,5 @@ func (s *StackService) healTemporalIfCorrupted(ctx context.Context, profiles []s
 	}
 
 	time.Sleep(2 * time.Second)
-	checkCmd := exec.CommandContext(ctx, "docker", "exec", "llmobs-alloydb-db", "psql", "-U", "admin", "-d", "temporal", "-tAc", "SELECT curr_version FROM schema_version LIMIT 1;")
-	out, err := checkCmd.Output()
-	if err == nil && strings.TrimSpace(string(out)) == "0.0" {
-		countCmd := exec.CommandContext(ctx, "docker", "exec", "llmobs-alloydb-db", "psql", "-U", "admin", "-d", "temporal", "-tAc", "SELECT count(*) FROM namespace_metadata;")
-		countOut, cErr := countCmd.Output()
-		if cErr == nil && strings.TrimSpace(string(countOut)) != "0" {
-			_ = exec.CommandContext(ctx, "docker", "exec", "llmobs-alloydb-db", "psql", "-U", "admin", "-d", "postgres", "-c", "DROP DATABASE IF EXISTS temporal WITH (FORCE);", "-c", "CREATE DATABASE temporal;", "-c", "DROP DATABASE IF EXISTS temporal_visibility WITH (FORCE);", "-c", "CREATE DATABASE temporal_visibility;").Run()
-			_ = exec.CommandContext(ctx, "docker", "restart", "llmobs-temporal-engine").Run()
-		}
-	}
+	_ = exec.CommandContext(ctx, "docker", "exec", "llmobs-alloydb-db", "psql", "-U", "admin", "-d", "temporal_visibility", "-c", "CREATE TABLE IF NOT EXISTS executions_visibility (namespace_id CHAR(64) NOT NULL, run_id CHAR(64) NOT NULL, start_time TIMESTAMP NOT NULL, execution_time TIMESTAMP NOT NULL, workflow_id VARCHAR(255) NOT NULL, workflow_type_name VARCHAR(255) NOT NULL, status INTEGER NOT NULL, close_time TIMESTAMP NULL, history_length BIGINT, memo BYTEA, encoding VARCHAR(64) NOT NULL, task_queue VARCHAR(255) DEFAULT '' NOT NULL, PRIMARY KEY (namespace_id, run_id)); CREATE INDEX IF NOT EXISTS by_type_start_time ON executions_visibility (namespace_id, workflow_type_name, status, start_time DESC, run_id); CREATE INDEX IF NOT EXISTS by_workflow_id_start_time ON executions_visibility (namespace_id, workflow_id, status, start_time DESC, run_id); CREATE INDEX IF NOT EXISTS by_status_by_start_time ON executions_visibility (namespace_id, status, start_time DESC, run_id); CREATE INDEX IF NOT EXISTS by_type_close_time ON executions_visibility (namespace_id, workflow_type_name, status, close_time DESC, run_id); CREATE INDEX IF NOT EXISTS by_workflow_id_close_time ON executions_visibility (namespace_id, workflow_id, status, close_time DESC, run_id); CREATE INDEX IF NOT EXISTS by_status_by_close_time ON executions_visibility (namespace_id, status, close_time DESC, run_id); ALTER TABLE executions_visibility ADD COLUMN IF NOT EXISTS history_size_bytes BIGINT DEFAULT 0; ALTER TABLE executions_visibility ADD COLUMN IF NOT EXISTS execution_duration BIGINT DEFAULT 0; ALTER TABLE executions_visibility ADD COLUMN IF NOT EXISTS state_transition_count BIGINT DEFAULT 0; ALTER TABLE executions_visibility ADD COLUMN IF NOT EXISTS parent_workflow_id VARCHAR(255); ALTER TABLE executions_visibility ADD COLUMN IF NOT EXISTS parent_run_id VARCHAR(255); ALTER TABLE executions_visibility ADD COLUMN IF NOT EXISTS root_workflow_id VARCHAR(255); ALTER TABLE executions_visibility ADD COLUMN IF NOT EXISTS root_run_id VARCHAR(255);").Run()
 }
