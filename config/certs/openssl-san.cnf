@@ -1,0 +1,39 @@
+[req]
+default_bits       = 4096
+distinguished_name = req_distinguished_name
+req_extensions     = v3_req
+prompt             = no
+
+[req_distinguished_name]
+C  = IN
+ST = Gujarat
+L  = Ahmedabad
+O  = LLMObs
+OU = Frontend
+CN = llmobs.gateway
+
+[v3_req]
+basicConstraints     = CA:FALSE
+keyUsage             = digitalSignature, keyEncipherment
+extendedKeyUsage     = serverAuth, clientAuth
+subjectAltName       = @alt_names
+
+[v3_ca]
+basicConstraints     = critical, CA:TRUE, pathlen:0
+keyUsage             = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+
+[alt_names]
+DNS.1 = llmobs.gateway
+DNS.2 = llmobs.grafana
+DNS.3 = llmobs.tempo
+DNS.4 = llmobs.otel
+DNS.5 = llmobs.kafka
+DNS.6 = llmobs.redis
+DNS.7 = gateway.llmobs.local
+DNS.8 = grafana.llmobs.local
+DNS.9 = tempo.llmobs.local
+DNS.10 = otel.llmobs.local
+DNS.11 = localhost
+IP.1 = 127.0.0.1
+IP.2 = ::1

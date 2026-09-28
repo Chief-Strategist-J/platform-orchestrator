@@ -5,6 +5,8 @@ server:
 
 docker:
   network: "llmobs-network"
+  subnet: "172.28.0.0/16"
+  gateway: "172.28.0.1"
   composeFile: "docker-compose.yml"
   statelessFile: "docker-compose.stateless.yml"
   prodFile: "docker-compose.prod.yml"
@@ -17,3 +19,11 @@ orchestrator:
   portRange:
     start: 31410
     end: 31426
+
+paths:
+  markers:
+    - "env.schema"
+    - "default.yaml"
+    - "certs"
+    - "traefik"
+    - "alloydb"

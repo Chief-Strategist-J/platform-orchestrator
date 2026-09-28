@@ -59,24 +59,11 @@ import (
 	stackService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/services"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/infra/docker"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/infra/observability"
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
 )
 
 func findWorkspaceRoot() string {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "."
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "docker-compose.yml")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	return "."
+	return paths.DiscoverWorkspaceRoot()
 }
 
 func promptInteractiveProfile() []string {
@@ -186,13 +173,24 @@ func Execute() {
 			}
 
 			certSpec := certsSchema.DefaultCertSpec(workspaceRoot)
-			_, _ = certsSvc.EnsureCertificates(ctx, certSpec)
+			if _, err := certsSvc.EnsureCertificates(ctx, certSpec); err != nil {
+				return fmt.Errorf("certificate initialization failed: %w", err)
+			}
 
-			_ = portSvc.FreePorts(ctx, nil)
+			if err := portSvc.FreePorts(ctx, nil); err != nil {
+				return fmt.Errorf("port preparation failed: %w", err)
+			}
+
+			netName, _ := cmd.Flags().GetString("network-name")
+			netSubnet, _ := cmd.Flags().GetString("network-subnet")
+			netGateway, _ := cmd.Flags().GetString("network-gateway")
 
 			outcome, err := stackSvc.StartStack(ctx, stackSchema.StackUpCommand{
-				Profiles: profiles,
-				Detach:   true,
+				Profiles:       profiles,
+				Detach:         true,
+				NetworkName:    netName,
+				NetworkSubnet:  netSubnet,
+				NetworkGateway: netGateway,
 			})
 			if err != nil {
 				return err
@@ -201,6 +199,9 @@ func Execute() {
 			return nil
 		},
 	}
+	upCmd.Flags().String("network-name", "", "Custom Docker network name (e.g. llmobs-network)")
+	upCmd.Flags().String("network-subnet", "", "Custom Docker network subnet (e.g. 172.28.0.0/16)")
+	upCmd.Flags().String("network-gateway", "", "Custom Docker network gateway (e.g. 172.28.0.1)")
 
 	downCmd := &cobra.Command{
 		Use:   "down",
@@ -228,7 +229,10 @@ func Execute() {
 
 			fmt.Println("\nRunning post-restart health check...")
 			targets := healthSchema.DefaultHealthTargets("localhost")
-			_ = healthSvc.RunHealthChecks(ctx, targets)
+			report := healthSvc.RunHealthChecks(ctx, targets)
+			if !report.Healthy {
+				return fmt.Errorf("one or more required services failed post-restart health checks")
+			}
 
 			return nil
 		},

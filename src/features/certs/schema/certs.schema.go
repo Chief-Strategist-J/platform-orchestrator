@@ -10,6 +10,10 @@ ALGORITHM BLUEPRINT:
 */
 package schema
 
+import (
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
+)
+
 type CertGenerationSpec struct {
 	CertDir      string   `json:"certDir"`
 	CertFile     string   `json:"certFile"`
@@ -28,8 +32,9 @@ type CertResult struct {
 }
 
 func DefaultCertSpec(baseDir string) CertGenerationSpec {
+	resolver := paths.NewPathResolver(baseDir)
 	return CertGenerationSpec{
-		CertDir:      baseDir + "/config/certs",
+		CertDir:      resolver.CertDir(),
 		CertFile:     "traefik.crt",
 		KeyFile:      "traefik.key",
 		CommonName:   "localhost",

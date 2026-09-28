@@ -98,14 +98,25 @@ func (h *OrchestratorHandler) writeJSON(w http.ResponseWriter, status int, paylo
 
 func (h *OrchestratorHandler) HandleStackUp(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Profiles []string `json:"profiles"`
-		Detach   bool     `json:"detach"`
+		Profiles       []string `json:"profiles"`
+		Detach         bool     `json:"detach"`
+		NetworkName    string   `json:"networkName,omitempty"`
+		NetworkSubnet  string   `json:"networkSubnet,omitempty"`
+		NetworkGateway string   `json:"networkGateway,omitempty"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
+			return
+		}
+	}
 
 	outcome, err := h.stackService.StartStack(r.Context(), stackSchema.StackUpCommand{
-		Profiles: body.Profiles,
-		Detach:   body.Detach,
+		Profiles:       body.Profiles,
+		Detach:         body.Detach,
+		NetworkName:    body.NetworkName,
+		NetworkSubnet:  body.NetworkSubnet,
+		NetworkGateway: body.NetworkGateway,
 	})
 	if err != nil {
 		h.writeJSON(w, http.StatusInternalServerError, types.NewErrorResponse[any]("ERR_STACK_UP", err.Error(), "stack", "v1"))
@@ -235,7 +246,12 @@ func (h *OrchestratorHandler) HandleGenerateCerts(w http.ResponseWriter, r *http
 
 func (h *OrchestratorHandler) HandleBackupExecute(w http.ResponseWriter, r *http.Request) {
 	var opts backupSchema.BackupOptions
-	_ = json.NewDecoder(r.Body).Decode(&opts)
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&opts); err != nil {
+			h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
+			return
+		}
+	}
 
 	report, err := h.backupService.ExecuteBackupAndPurge(r.Context(), opts)
 	if err != nil {
@@ -249,7 +265,12 @@ func (h *OrchestratorHandler) HandleSetupBootstrap(w http.ResponseWriter, r *htt
 	var body struct {
 		PullImages bool `json:"pullImages"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
+			return
+		}
+	}
 
 	report, err := h.setupService.RunSetupPipeline(r.Context(), body.PullImages)
 	if err != nil {

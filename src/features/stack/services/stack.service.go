@@ -4,14 +4,14 @@ Package services implements stack lifecycle management (up, down, restart, statu
 ALGORITHM BLUEPRINT:
 1. StartStack:
    - Ensures workspace .env exists; copies from .env.example if missing.
-   - Resolves profiles and selects compose files via rules.
-   - Ensures docker bridge network 'llmobs-network' exists.
-   - Prepares persistent data storage directories unless running in pure stateless profile.
+   - Resolves profiles and selects compose files via rules with string normalization.
+   - Ensures docker bridge network exists with parameters from command/API, environment, or YAML config.
+   - Prepares persistent data storage directories from schema unless running in pure stateless profile.
    - Executes ComposeUp through ContainerPort and renders active endpoint URLs.
-2. StopStack: Executes ComposeDown across all profiles.
-3. RestartStack: Executes ComposeRestart.
-4. GetStatus: Returns active container statuses.
-5. PrintEndpoints: Inspects active profiles and prints database connection strings, dashboard URLs, and gateway endpoints.
+2. StopStack: Executes ComposeDown across all profiles with schema constants and fail-fast errors.
+3. RestartStack: Executes ComposeRestart with normalized profiles and fail-fast errors.
+4. GetStatus: Returns active container statuses using resolved compose paths.
+5. PrintEndpoints: Inspects active profiles using schema.ResolveActiveEndpoints.
 6. Invariants:
    - Stateless profiles skip local persistent storage directory creation.
    - Zero inline comments inside function bodies.
@@ -27,6 +27,7 @@ import (
 
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/rules"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/schema"
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/ports"
 )
 
@@ -52,50 +53,50 @@ func NewStackService(
 }
 
 func (s *StackService) ensureEnvFile() error {
-	envPath := filepath.Join(s.baseDir, ".env")
+	resolver := paths.NewPathResolver(s.baseDir)
+	envPath := resolver.EnvFile()
 	if _, err := os.Stat(envPath); err == nil {
 		return nil
 	}
 
-	examplePath := filepath.Join(s.baseDir, ".env.example")
+	examplePath := resolver.EnvExampleFile()
 	data, err := os.ReadFile(examplePath)
 	if err != nil {
-		return nil
+		return fmt.Errorf("failed to read %s: %w", examplePath, err)
 	}
 	return os.WriteFile(envPath, data, 0644)
 }
 
 func (s *StackService) ensureStorageDirectories(dataDir string) error {
-	subdirs := []string{
-		"alloydb/data",
-		"alloydb/archive",
-		"redis/data",
-		"kafka/data",
-		"clickhouse/data",
-		"tempo/data",
-		"grafana/data",
-	}
-	for _, sub := range subdirs {
+	for _, sub := range schema.DefaultStorageSubdirs {
 		p := filepath.Join(dataDir, sub)
 		if err := os.MkdirAll(p, 0777); err != nil {
 			return fmt.Errorf("failed to create data dir %s: %w", p, err)
 		}
-		_ = os.Chmod(p, 0777)
+		if err := os.Chmod(p, 0777); err != nil {
+			return fmt.Errorf("failed to chmod data dir %s: %w", p, err)
+		}
 	}
 	return nil
 }
 
 func (s *StackService) getEnv(key string, fallback string) string {
-	envPath := filepath.Join(s.baseDir, ".env")
+	normKey := schema.NormalizeString(key)
+	resolver := paths.NewPathResolver(s.baseDir)
+	envPath := resolver.EnvFile()
 	data, err := os.ReadFile(envPath)
 	if err != nil {
 		return fallback
 	}
 	lines := strings.Split(string(data), "\n")
 	for _, l := range lines {
-		if strings.HasPrefix(l, key+"=") {
-			val := strings.TrimPrefix(l, key+"=")
-			return strings.Trim(val, `"' `)
+		trimmed := strings.TrimSpace(l)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		parts := strings.SplitN(trimmed, "=", 2)
+		if len(parts) == 2 && schema.NormalizeString(parts[0]) == normKey {
+			return strings.Trim(parts[1], `"' `)
 		}
 	}
 	return fallback
@@ -105,30 +106,45 @@ func (s *StackService) StartStack(ctx context.Context, cmd schema.StackUpCommand
 	_, endSpan := s.tracer.StartSpan(ctx, "llmobs.stack.up")
 	defer endSpan()
 
-	_ = s.ensureEnvFile()
+	if err := s.ensureEnvFile(); err != nil {
+		return schema.StackActionOutcome{
+			Status:  schema.StatusError,
+			Message: fmt.Sprintf("environment initialization failed: %v", err),
+		}, fmt.Errorf("environment initialization failed: %w", err)
+	}
 
 	profiles := rules.ResolveProfiles(cmd.Profiles)
 	composeFiles := rules.SelectComposeFiles(s.baseDir, profiles)
 
-	if err := s.networkPort.EnsureNetwork(ctx, "llmobs-network", "172.28.0.0/16", "172.28.0.1"); err != nil {
-		return schema.StackActionOutcome{}, fmt.Errorf("network initialization failed: %w", err)
+	resolver := paths.NewPathResolver(s.baseDir)
+	netName, netSubnet, netGateway := resolver.ResolveNetworkConfig(
+		cmd.NetworkName,
+		cmd.NetworkSubnet,
+		cmd.NetworkGateway,
+	)
+
+	if err := s.networkPort.EnsureNetwork(ctx, netName, netSubnet, netGateway); err != nil {
+		return schema.StackActionOutcome{
+			Status:  schema.StatusError,
+			Message: fmt.Sprintf("network initialization failed (%s): %v", netName, err),
+		}, fmt.Errorf("network initialization failed (%s): %w", netName, err)
 	}
 
 	isStateless := false
 	for _, p := range profiles {
-		if p == "stateless" || p == "compute" {
+		if schema.IsStatelessProfile(p) {
 			isStateless = true
 			break
 		}
 	}
 
 	if !isStateless {
-		dataDir := os.Getenv("LLMOBS_DATA_DIR")
-		if dataDir == "" {
-			dataDir = filepath.Join(s.baseDir, "data")
-		}
+		dataDir := resolver.DataDir()
 		if err := s.ensureStorageDirectories(dataDir); err != nil {
-			return schema.StackActionOutcome{}, fmt.Errorf("storage directory initialization failed: %w", err)
+			return schema.StackActionOutcome{
+				Status:  schema.StatusError,
+				Message: fmt.Sprintf("storage directory initialization failed: %v", err),
+			}, fmt.Errorf("storage directory initialization failed: %w", err)
 		}
 	}
 
@@ -140,14 +156,17 @@ func (s *StackService) StartStack(ctx context.Context, cmd schema.StackUpCommand
 	}
 
 	if err := s.containerPort.ComposeUp(ctx, opts); err != nil {
-		return schema.StackActionOutcome{}, fmt.Errorf("compose up failed: %w", err)
+		return schema.StackActionOutcome{
+			Status:  schema.StatusError,
+			Message: fmt.Sprintf("compose up failed: %v", err),
+		}, fmt.Errorf("compose up failed: %w", err)
 	}
 
 	s.PrintEndpoints(profiles)
 
 	return schema.StackActionOutcome{
-		Status:         "RUNNING",
-		Message:        "Stack started successfully",
+		Status:         schema.StatusRunning,
+		Message:        schema.MsgStackStarted,
 		ActiveServices: profiles,
 	}, nil
 }
@@ -156,19 +175,23 @@ func (s *StackService) StopStack(ctx context.Context) (schema.StackActionOutcome
 	_, endSpan := s.tracer.StartSpan(ctx, "llmobs.stack.down")
 	defer endSpan()
 
-	composeFiles := []string{filepath.Join(s.baseDir, "docker-compose.yml")}
+	resolver := paths.NewPathResolver(s.baseDir)
+	composeFiles := []string{resolver.ComposeFile(schema.DefaultComposeFile)}
 	opts := ports.ComposeOptions{
 		ComposeFiles: composeFiles,
-		Profiles:     []string{"*"},
+		Profiles:     []string{schema.ProfileAll},
 	}
 
 	if err := s.containerPort.ComposeDown(ctx, opts); err != nil {
-		return schema.StackActionOutcome{}, fmt.Errorf("compose down failed: %w", err)
+		return schema.StackActionOutcome{
+			Status:  schema.StatusError,
+			Message: fmt.Sprintf("compose down failed: %v", err),
+		}, fmt.Errorf("compose down failed: %w", err)
 	}
 
 	return schema.StackActionOutcome{
-		Status:         "STOPPED",
-		Message:        "All stack containers stopped",
+		Status:         schema.StatusStopped,
+		Message:        schema.MsgStackStopped,
 		ActiveServices: []string{},
 	}, nil
 }
@@ -186,12 +209,15 @@ func (s *StackService) RestartStack(ctx context.Context, profiles []string) (sch
 	}
 
 	if err := s.containerPort.ComposeRestart(ctx, opts); err != nil {
-		return schema.StackActionOutcome{}, fmt.Errorf("compose restart failed: %w", err)
+		return schema.StackActionOutcome{
+			Status:  schema.StatusError,
+			Message: fmt.Sprintf("compose restart failed: %v", err),
+		}, fmt.Errorf("compose restart failed: %w", err)
 	}
 
 	return schema.StackActionOutcome{
-		Status:         "RESTARTED",
-		Message:        "Stack restarted successfully",
+		Status:         schema.StatusRestarted,
+		Message:        schema.MsgStackRestarted,
 		ActiveServices: resolved,
 	}, nil
 }
@@ -200,88 +226,37 @@ func (s *StackService) GetStatus(ctx context.Context) ([]ports.ContainerStatus, 
 	_, endSpan := s.tracer.StartSpan(ctx, "llmobs.stack.status")
 	defer endSpan()
 
-	composeFiles := []string{filepath.Join(s.baseDir, "docker-compose.yml")}
+	resolver := paths.NewPathResolver(s.baseDir)
+	composeFiles := []string{resolver.ComposeFile(schema.DefaultComposeFile)}
 	opts := ports.ComposeOptions{
 		ComposeFiles: composeFiles,
-		Profiles:     []string{"*"},
+		Profiles:     []string{schema.ProfileAll},
 	}
 
 	return s.containerPort.ComposeStatus(ctx, opts)
 }
 
 func (s *StackService) StreamLogs(ctx context.Context, tail int) error {
-	composeFiles := []string{filepath.Join(s.baseDir, "docker-compose.yml")}
+	resolver := paths.NewPathResolver(s.baseDir)
+	composeFiles := []string{resolver.ComposeFile(schema.DefaultComposeFile)}
 	opts := ports.ComposeOptions{
 		ComposeFiles: composeFiles,
-		Profiles:     []string{"*"},
+		Profiles:     []string{schema.ProfileAll},
 	}
 	return s.containerPort.ComposeLogs(ctx, opts, tail)
 }
 
-func (s *StackService) PrintEndpoints(profiles []string) {
-	profMap := make(map[string]bool)
-	isFull := false
-	for _, p := range profiles {
-		profMap[p] = true
-		if p == "full" {
-			isFull = true
-		}
-	}
+func (s *StackService) GetActiveEndpoints(profiles []string) []schema.ServiceEndpoint {
+	return schema.ResolveActiveEndpoints(profiles, s.getEnv)
+}
 
+func (s *StackService) PrintEndpoints(profiles []string) {
+	endpoints := s.GetActiveEndpoints(profiles)
 	fmt.Println("\n=====================================================")
 	fmt.Println("  Active Services & Configurations                   ")
 	fmt.Println("=====================================================")
-
-	if isFull || profMap["db"] || profMap["stateful"] {
-		portAlloy := s.getEnv("PORT_ALLOYDB", "31420")
-		dbUser := s.getEnv("ALLOYDB_USER", "admin")
-		dbName := s.getEnv("ALLOYDB_DB", "llm_observability")
-		fmt.Printf("  • AlloyDB (PostgreSQL): postgresql://%s:***@localhost:%s/%s\n", dbUser, portAlloy, dbName)
-
-		portRedis := s.getEnv("PORT_REDIS", "31413")
-		fmt.Printf("  • Redis Ledger:         redis://:***@localhost:%s/0\n", portRedis)
+	for _, ep := range endpoints {
+		fmt.Printf("  • %-22s: %s\n", ep.Service, ep.Endpoint)
 	}
-
-	if isFull || profMap["analytics"] || profMap["stateful"] {
-		pHttp := s.getEnv("PORT_CLICKHOUSE_HTTP", "31421")
-		pNative := s.getEnv("PORT_CLICKHOUSE_NATIVE", "31422")
-		fmt.Printf("  • ClickHouse Analytics: HTTP: http://localhost:%s | Native TCP: localhost:%s\n", pHttp, pNative)
-	}
-
-	if isFull || profMap["streaming"] || profMap["stateful"] {
-		pKafka := s.getEnv("PORT_KAFKA", "31414")
-		fmt.Printf("  • Kafka Broker:          localhost:%s\n", pKafka)
-	}
-
-	if isFull || profMap["workflows"] || profMap["stateless"] {
-		pGrpc := s.getEnv("PORT_TEMPORAL_GRPC", "31424")
-		pUI := s.getEnv("PORT_TEMPORAL_UI", "31425")
-		fmt.Printf("  • Temporal gRPC Engine:  localhost:%s\n", pGrpc)
-		fmt.Printf("  • Temporal Web UI:       http://localhost:%s\n", pUI)
-	}
-
-	if isFull || profMap["tracing"] || profMap["stateful"] || profMap["stateless"] {
-		pGraf := s.getEnv("PORT_GRAFANA", "31415")
-		fmt.Printf("  • Grafana Dashboard:     http://localhost:%s\n", pGraf)
-
-		pOtelHttp := s.getEnv("PORT_OTEL_HTTP", "31417")
-		pOtelGrpc := s.getEnv("PORT_OTEL_GRPC", "31418")
-		fmt.Printf("  • OTel Collector:        HTTP: http://localhost:%s | gRPC: localhost:%s\n", pOtelHttp, pOtelGrpc)
-
-		pTempo := s.getEnv("PORT_TEMPO", "31416")
-		fmt.Printf("  • Grafana Tempo:         http://localhost:%s\n", pTempo)
-	}
-
-	if isFull || profMap["network"] || profMap["stateless"] {
-		pTrHttp := s.getEnv("PORT_TRAEFIK_HTTP", "31410")
-		pTrDash := s.getEnv("PORT_TRAEFIK_DASHBOARD", "31411")
-		pTrHttps := s.getEnv("PORT_TRAEFIK_HTTPS", "31419")
-		fmt.Printf("  • Traefik HTTP Gateway:  http://localhost:%s (→ HTTPS:%s)\n", pTrHttp, pTrHttps)
-		fmt.Printf("  • Traefik Dashboard:     http://localhost:%s\n", pTrDash)
-
-		pReg := s.getEnv("PORT_SERVICE_REGISTRY", "31426")
-		fmt.Printf("  • Service Registry API:  http://localhost:%s\n", pReg)
-	}
-
 	fmt.Println("=====================================================")
 }

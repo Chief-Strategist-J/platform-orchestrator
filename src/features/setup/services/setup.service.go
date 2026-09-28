@@ -30,6 +30,8 @@ import (
 	certsService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/certs/services"
 	prereqService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/prereqs/services"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/setup/schema"
+	stackSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/schema"
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/ports"
 )
 
@@ -86,6 +88,9 @@ func (s *SetupService) RunSetupPipeline(ctx context.Context, pullImages bool) (*
 		return s.initializeStorageDirectories()
 	})
 	report.Steps = append(report.Steps, step3)
+	if !step3.Passed {
+		return report, fmt.Errorf("setup failed at step 3: %s", step3.Error)
+	}
 
 	step4 := s.executeStep(4, "Generating TLS certificates", func() error {
 		spec := certsSchema.DefaultCertSpec(s.workspaceRoot)
@@ -94,11 +99,17 @@ func (s *SetupService) RunSetupPipeline(ctx context.Context, pullImages bool) (*
 		return err
 	})
 	report.Steps = append(report.Steps, step4)
+	if !step4.Passed {
+		return report, fmt.Errorf("setup failed at step 4: %s", step4.Error)
+	}
 
 	step5 := s.executeStep(5, "Verifying local domain resolution", func() error {
 		return s.verifyLocalDomains()
 	})
 	report.Steps = append(report.Steps, step5)
+	if !step5.Passed {
+		return report, fmt.Errorf("setup failed at step 5: %s", step5.Error)
+	}
 
 	step6 := s.executeStep(6, "Pulling Docker container images", func() error {
 		if !pullImages {
@@ -107,11 +118,17 @@ func (s *SetupService) RunSetupPipeline(ctx context.Context, pullImages bool) (*
 		return s.pullContainerImages(ctx)
 	})
 	report.Steps = append(report.Steps, step6)
+	if !step6.Passed {
+		return report, fmt.Errorf("setup failed at step 6: %s", step6.Error)
+	}
 
 	step7 := s.executeStep(7, "Validating installation configuration", func() error {
 		return s.validateFinalSetup()
 	})
 	report.Steps = append(report.Steps, step7)
+	if !step7.Passed {
+		return report, fmt.Errorf("setup failed at step 7: %s", step7.Error)
+	}
 
 	passed := 0
 	for _, st := range report.Steps {
@@ -149,12 +166,13 @@ func (s *SetupService) executeStep(index int, name string, fn func() error) sche
 }
 
 func (s *SetupService) configureEnvironment() error {
-	envPath := filepath.Join(s.workspaceRoot, ".env")
+	resolver := paths.NewPathResolver(s.workspaceRoot)
+	envPath := resolver.EnvFile()
 	if _, err := os.Stat(envPath); err == nil {
 		return nil
 	}
 
-	examplePath := filepath.Join(s.workspaceRoot, ".env.example")
+	examplePath := resolver.EnvExampleFile()
 	data, err := os.ReadFile(examplePath)
 	if err != nil {
 		return fmt.Errorf(".env.example missing: %w", err)
@@ -176,27 +194,17 @@ func (s *SetupService) configureEnvironment() error {
 }
 
 func (s *SetupService) initializeStorageDirectories() error {
-	baseData := os.Getenv("LLMOBS_DATA_DIR")
-	if baseData == "" {
-		baseData = filepath.Join(s.workspaceRoot, "data")
-	}
+	resolver := paths.NewPathResolver(s.workspaceRoot)
+	baseData := resolver.DataDir()
 
-	subdirs := []string{
-		"alloydb/data",
-		"alloydb/archive",
-		"redis/data",
-		"kafka/data",
-		"clickhouse/data",
-		"tempo/data",
-		"grafana/data",
-	}
-
-	for _, sub := range subdirs {
+	for _, sub := range stackSchema.DefaultStorageSubdirs {
 		target := filepath.Join(baseData, sub)
 		if err := os.MkdirAll(target, 0777); err != nil {
 			return err
 		}
-		_ = os.Chmod(target, 0777)
+		if err := os.Chmod(target, 0777); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -235,12 +243,13 @@ func (s *SetupService) pullContainerImages(ctx context.Context) error {
 }
 
 func (s *SetupService) validateFinalSetup() error {
-	certFile := filepath.Join(s.workspaceRoot, "config", "certs", "server.pem")
-	if _, err := os.Stat(certFile); err != nil {
-		return fmt.Errorf("server certificate not found at %s", certFile)
+	resolver := paths.NewPathResolver(s.workspaceRoot)
+	certFile, err := resolver.FindExistingCert("traefik.crt", "server.pem")
+	if err != nil {
+		return fmt.Errorf("certificate not found at %s: %w", certFile, err)
 	}
 
-	composeFile := filepath.Join(s.workspaceRoot, "docker-compose.yml")
+	composeFile := resolver.ComposeFile("docker-compose.yml")
 	cmd := exec.Command("docker", "compose", "-f", composeFile, "config", "--quiet")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("docker-compose validation error: %w", err)

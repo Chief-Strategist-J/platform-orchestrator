@@ -15,6 +15,7 @@ import (
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/scale/rules"
 	scaleSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/scale/schema"
 	stackRules "github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/rules"
+	stackSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/schema"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/types"
 )
 
@@ -85,5 +86,46 @@ func TestEnvelopeGeneration(t *testing.T) {
 	}
 	if errResp.Errors[0].Code != "ERR_TEST" {
 		t.Fatalf("expected code ERR_TEST, got %s", errResp.Errors[0].Code)
+	}
+}
+
+func TestProfileNormalizationAndEndpoints(t *testing.T) {
+	// Mixed-case with whitespace
+	normalized := stackRules.ResolveProfiles([]string{"  DB  ", "WORKFLOWS", "db"})
+	if len(normalized) != 2 {
+		t.Fatalf("expected 2 unique normalized profiles, got %v", normalized)
+	}
+	if normalized[0] != "db" || normalized[1] != "workflows" {
+		t.Fatalf("expected ['db', 'workflows'], got %v", normalized)
+	}
+
+	// Verify SelectComposeFiles with uppercase input
+	files := stackRules.SelectComposeFiles(".", []string{" STATELESS "})
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files for normalized stateless profile, got %d", len(files))
+	}
+
+	// Verify Endpoint resolution
+	mockEnv := func(key, fallback string) string {
+		if key == "PORT_ALLOYDB" {
+			return "5432"
+		}
+		return fallback
+	}
+	endpoints := stackSchema.ResolveActiveEndpoints([]string{" DB "}, mockEnv)
+	if len(endpoints) == 0 {
+		t.Fatalf("expected resolved endpoints for db profile")
+	}
+	foundAlloy := false
+	for _, ep := range endpoints {
+		if ep.Service == "AlloyDB (PostgreSQL)" {
+			foundAlloy = true
+			if ep.Endpoint != "postgresql://admin:***@localhost:5432/llm_observability" {
+				t.Fatalf("unexpected endpoint: %s", ep.Endpoint)
+			}
+		}
+	}
+	if !foundAlloy {
+		t.Fatalf("expected AlloyDB in endpoints")
 	}
 }
