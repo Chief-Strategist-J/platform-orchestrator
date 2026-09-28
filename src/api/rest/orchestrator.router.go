@@ -193,6 +193,47 @@ func NewRouter(handler *OrchestratorHandler) http.Handler {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 	})
 
+	mux.HandleFunc("/api/v1/grafana/datasources", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			handler.HandleListDatasources(w, r)
+			return
+		}
+		if r.Method == http.MethodPost {
+			handler.HandleCreateDatasource(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+
+	mux.HandleFunc("/api/v1/grafana/datasources/sync", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			handler.HandleSyncDatasources(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+
+	mux.HandleFunc("/api/v1/grafana/datasources/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/health") {
+			if r.Method == http.MethodGet {
+				handler.HandleTestDatasourceHealth(w, r)
+				return
+			}
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			handler.HandleGetDatasource(w, r)
+		case http.MethodPut:
+			handler.HandleUpdateDatasource(w, r)
+		case http.MethodDelete:
+			handler.HandleDeleteDatasource(w, r)
+		default:
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")

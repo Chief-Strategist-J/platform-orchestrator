@@ -39,6 +39,9 @@ import (
 	configService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/config/services"
 	gdprSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/gdpr/schema"
 	gdprService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/gdpr/services"
+	grafanaSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/schema"
+	grafanaService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/services"
+	grafanaTypes "github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/types"
 	healthSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/health/schema"
 	healthService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/health/services"
 	portsService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/ports/services"
@@ -64,6 +67,7 @@ type OrchestratorHandler struct {
 	setupService      *setupService.SetupService
 	portService       *portsService.PortService
 	configService     *configService.ConfigService
+	grafanaService    *grafanaService.GrafanaService
 	baseDir           string
 }
 
@@ -79,6 +83,7 @@ func NewOrchestratorHandler(
 	setupSvc *setupService.SetupService,
 	portSvc *portsService.PortService,
 	configSvc *configService.ConfigService,
+	grafanaSvc *grafanaService.GrafanaService,
 	baseDir string,
 ) *OrchestratorHandler {
 	return &OrchestratorHandler{
@@ -93,6 +98,7 @@ func NewOrchestratorHandler(
 		setupService:      setupSvc,
 		portService:       portSvc,
 		configService:     configSvc,
+		grafanaService:    grafanaSvc,
 		baseDir:           baseDir,
 	}
 }
@@ -455,3 +461,131 @@ func (h *OrchestratorHandler) HandleUpdateConfig(w http.ResponseWriter, r *http.
 	}
 	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(report, "v1"))
 }
+
+func (h *OrchestratorHandler) extractClientOptions(r *http.Request) grafanaTypes.ClientOptions {
+	q := r.URL.Query()
+	return grafanaTypes.ClientOptions{
+		GrafanaURL: q.Get("grafanaUrl"),
+		Username:   q.Get("username"),
+		Password:   q.Get("password"),
+	}
+}
+
+func (h *OrchestratorHandler) HandleListDatasources(w http.ResponseWriter, r *http.Request) {
+	opts := h.extractClientOptions(r)
+	list, err := h.grafanaService.ListDatasources(r.Context(), opts)
+	if err != nil {
+		h.writeJSON(w, http.StatusInternalServerError, types.NewErrorResponse[any]("ERR_GRAFANA_LIST", err.Error(), "datasources", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(list, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleGetDatasource(w http.ResponseWriter, r *http.Request) {
+	idOrUid := strings.TrimPrefix(r.URL.Path, "/api/v1/grafana/datasources/")
+	idOrUid = strings.TrimSuffix(idOrUid, "/health")
+	if idOrUid == "" {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_PARAM", "missing datasource id or uid", "idOrUid", "v1"))
+		return
+	}
+	opts := h.extractClientOptions(r)
+	ds, err := h.grafanaService.GetDatasource(r.Context(), idOrUid, opts)
+	if err != nil {
+		h.writeJSON(w, http.StatusNotFound, types.NewErrorResponse[any]("ERR_GRAFANA_NOT_FOUND", err.Error(), "idOrUid", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(ds, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleCreateDatasource(w http.ResponseWriter, r *http.Request) {
+	var payload grafanaSchema.DatasourcePayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
+		return
+	}
+	testConn := r.URL.Query().Get("test") != "false"
+	opts := h.extractClientOptions(r)
+	res, err := h.grafanaService.CreateDatasource(r.Context(), payload, testConn, opts)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_GRAFANA_CREATE", err.Error(), "datasource", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusCreated, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleUpdateDatasource(w http.ResponseWriter, r *http.Request) {
+	idOrUid := strings.TrimPrefix(r.URL.Path, "/api/v1/grafana/datasources/")
+	if idOrUid == "" {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_PARAM", "missing datasource id or uid", "idOrUid", "v1"))
+		return
+	}
+	var payload grafanaSchema.DatasourcePayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
+		return
+	}
+	testConn := r.URL.Query().Get("test") != "false"
+	opts := h.extractClientOptions(r)
+	res, err := h.grafanaService.UpdateDatasource(r.Context(), idOrUid, payload, testConn, opts)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_GRAFANA_UPDATE", err.Error(), "datasource", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleDeleteDatasource(w http.ResponseWriter, r *http.Request) {
+	idOrUid := strings.TrimPrefix(r.URL.Path, "/api/v1/grafana/datasources/")
+	if idOrUid == "" {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_PARAM", "missing datasource id or uid", "idOrUid", "v1"))
+		return
+	}
+	opts := h.extractClientOptions(r)
+	res, err := h.grafanaService.DeleteDatasource(r.Context(), idOrUid, opts)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_GRAFANA_DELETE", err.Error(), "datasource", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleTestDatasourceHealth(w http.ResponseWriter, r *http.Request) {
+	idOrUid := strings.TrimPrefix(r.URL.Path, "/api/v1/grafana/datasources/")
+	idOrUid = strings.TrimSuffix(idOrUid, "/health")
+	if idOrUid == "" {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_PARAM", "missing datasource id or uid", "idOrUid", "v1"))
+		return
+	}
+	opts := h.extractClientOptions(r)
+	res, err := h.grafanaService.TestDatasourceHealth(r.Context(), idOrUid, opts)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_GRAFANA_HEALTH", err.Error(), "datasource", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleSyncDatasources(w http.ResponseWriter, r *http.Request) {
+	var opts grafanaSchema.DatasourceSyncOptions
+	if r.Body != nil && r.ContentLength > 0 {
+		_ = json.NewDecoder(r.Body).Decode(&opts)
+	}
+	if opts.GrafanaURL == "" {
+		opts.GrafanaURL = r.URL.Query().Get("grafanaUrl")
+	}
+	if opts.GrafanaUser == "" {
+		opts.GrafanaUser = r.URL.Query().Get("username")
+	}
+	if opts.GrafanaPass == "" {
+		opts.GrafanaPass = r.URL.Query().Get("password")
+	}
+	opts.TestConnection = r.URL.Query().Get("test") != "false"
+
+	report, err := h.grafanaService.SyncDatasources(r.Context(), opts)
+	if err != nil {
+		h.writeJSON(w, http.StatusInternalServerError, types.NewErrorResponse[any]("ERR_GRAFANA_SYNC", err.Error(), "sync", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(report, "v1"))
+}
+

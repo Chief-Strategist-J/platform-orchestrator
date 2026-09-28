@@ -1,19 +1,33 @@
 /*
-Package services provides Grafana datasource configuration and synchronization.
+Package services provides complete Grafana datasource management, synchronization, and health verification.
 
 ALGORITHM BLUEPRINT:
-1. GrafanaService: Orchestrates dynamic datasource provisioning across platform services (AlloyDB, ClickHouse, Redis, Tempo).
-2. SyncDatasources:
-   a. Authenticates with Grafana REST API using configured credentials.
-   b. Resolves database credentials from workspace .env or CLI overrides.
-   c. Queries existing datasources (GET /api/datasources).
-   d. Upserts datasources (POST /api/datasources or PUT /api/datasources/:id).
-   e. Executes health validation on provisioned datasource (GET /api/datasources/uid/:uid/health).
-   f. Compiles consolidated execution report.
-3. Invariants:
+1. GrafanaService: Orchestrates CRUD lifecycle and health probes for arbitrary and platform-managed Grafana datasources.
+2. ListDatasources:
+   a. Dispatches authenticated GET /api/datasources.
+   b. Parses array of DatasourcePayload.
+3. GetDatasource:
+   a. Searches by UID via GET /api/datasources/uid/:uid or by ID / Name fallback.
+4. CreateDatasource:
+   a. Normalizes and validates payload via rules engine.
+   b. Dispatches POST /api/datasources.
+   c. If testConnection=true, runs health probe on returned UID.
+5. UpdateDatasource:
+   a. Normalizes and validates payload.
+   b. Dispatches PUT /api/datasources/uid/:uid (or by ID).
+   c. Optionally verifies health.
+6. DeleteDatasource:
+   a. Dispatches DELETE /api/datasources/uid/:uid (or by ID).
+7. TestDatasourceHealth:
+   a. Dispatches GET /api/datasources/uid/:uid/health.
+   b. Compiles DatasourceHealthResult with latency and status.
+8. SyncDatasources:
+   a. Evaluates requested services against template rules and existing datasources.
+   b. Upserts each datasource and tests connection health.
+9. Invariants:
    - Zero inline comments inside function bodies.
-   - Traces all calls via OpenTelemetry spans.
-   - Safe credential mask and bounds checking on API payloads.
+   - All external calls wrapped with OpenTelemetry spans.
+   - Credentials resolved from environment with graceful fallbacks.
 */
 package services
 
@@ -29,7 +43,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/rules"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/schema"
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/types"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/ports"
 )
 
@@ -45,30 +61,321 @@ func NewGrafanaService(tracer ports.TracerPort, baseDir string) *GrafanaService 
 	}
 }
 
+func (s *GrafanaService) ListDatasources(ctx context.Context, clientOpts types.ClientOptions) ([]schema.DatasourcePayload, error) {
+	_, endSpan := s.tracer.StartSpan(ctx, "llmobs.grafana.list_datasources")
+	defer endSpan()
+
+	client, grafanaURL, user, pass := s.resolveClient(clientOpts)
+	list, _, err := s.fetchExistingDatasources(client, grafanaURL, user, pass)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list Grafana datasources: %w", err)
+	}
+	return list, nil
+}
+
+func (s *GrafanaService) GetDatasource(ctx context.Context, idOrUid string, clientOpts types.ClientOptions) (*schema.DatasourcePayload, error) {
+	_, endSpan := s.tracer.StartSpan(ctx, "llmobs.grafana.get_datasource")
+	defer endSpan()
+
+	client, grafanaURL, user, pass := s.resolveClient(clientOpts)
+
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/api/datasources/uid/%s", grafanaURL, idOrUid), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(user, pass)
+
+	resp, err := client.Do(req)
+	if err == nil && resp.StatusCode == http.StatusOK {
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
+		var ds schema.DatasourcePayload
+		if err := json.Unmarshal(body, &ds); err == nil && ds.Name != "" {
+			return &ds, nil
+		}
+	}
+	if resp != nil {
+		resp.Body.Close()
+	}
+
+	list, _, err := s.fetchExistingDatasources(client, grafanaURL, user, pass)
+	if err != nil {
+		return nil, err
+	}
+	for _, ds := range list {
+		if ds.UID == idOrUid || strings.EqualFold(ds.Name, idOrUid) || fmt.Sprintf("%d", ds.ID) == idOrUid {
+			return &ds, nil
+		}
+	}
+
+	return nil, fmt.Errorf("datasource %q not found", idOrUid)
+}
+
+func (s *GrafanaService) CreateDatasource(ctx context.Context, payload schema.DatasourcePayload, testConnection bool, clientOpts types.ClientOptions) (*schema.SingleDatasourceResult, error) {
+	_, endSpan := s.tracer.StartSpan(ctx, "llmobs.grafana.create_datasource")
+	defer endSpan()
+
+	normalized := rules.NormalizeDatasourcePayload(payload)
+	if err := rules.ValidateDatasourcePayload(normalized); err != nil {
+		return nil, err
+	}
+
+	client, grafanaURL, user, pass := s.resolveClient(clientOpts)
+	start := time.Now()
+
+	dataBytes, _ := json.Marshal(normalized)
+	req, err := http.NewRequest("POST", fmt.Sprintf("%s/api/datasources", grafanaURL), bytes.NewReader(dataBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(user, pass)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create datasource: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to create datasource (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	var resObj map[string]interface{}
+	_ = json.Unmarshal(body, &resObj)
+
+	createdUID := normalized.UID
+	var createdID int64
+	if uid, ok := resObj["uid"].(string); ok && uid != "" {
+		createdUID = uid
+	}
+	if idVal, ok := resObj["id"].(float64); ok {
+		createdID = int64(idVal)
+	}
+	if dsMap, ok := resObj["datasource"].(map[string]interface{}); ok {
+		if uid, ok := dsMap["uid"].(string); ok && uid != "" {
+			createdUID = uid
+		}
+		if idVal, ok := dsMap["id"].(float64); ok {
+			createdID = int64(idVal)
+		}
+	}
+
+	msg := fmt.Sprintf("Datasource %q created successfully", normalized.Name)
+	if testConnection && createdUID != "" {
+		if healthRes, hErr := s.TestDatasourceHealth(ctx, createdUID, clientOpts); hErr == nil {
+			msg = fmt.Sprintf("%s (Health: %s - %s)", msg, healthRes.Status, healthRes.Message)
+		}
+	}
+
+	return &schema.SingleDatasourceResult{
+		Service:        normalized.Name,
+		DatasourceName: normalized.Name,
+		DatasourceUID:  createdUID,
+		DatasourceID:   createdID,
+		Status:         "CREATED",
+		Message:        msg,
+		LatencyMs:      float64(time.Since(start).Milliseconds()),
+		IsHealthy:      true,
+	}, nil
+}
+
+func (s *GrafanaService) UpdateDatasource(ctx context.Context, idOrUid string, payload schema.DatasourcePayload, testConnection bool, clientOpts types.ClientOptions) (*schema.SingleDatasourceResult, error) {
+	_, endSpan := s.tracer.StartSpan(ctx, "llmobs.grafana.update_datasource")
+	defer endSpan()
+
+	normalized := rules.NormalizeDatasourcePayload(payload)
+	client, grafanaURL, user, pass := s.resolveClient(clientOpts)
+	start := time.Now()
+
+	existing, err := s.GetDatasource(ctx, idOrUid, clientOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	if normalized.Name == "" {
+		normalized.Name = existing.Name
+	}
+	if normalized.Type == "" {
+		normalized.Type = existing.Type
+	}
+	if normalized.URL == "" {
+		normalized.URL = existing.URL
+	}
+	if normalized.Access == "" {
+		normalized.Access = existing.Access
+	}
+	if normalized.User == "" {
+		normalized.User = existing.User
+	}
+	if normalized.Database == "" {
+		normalized.Database = existing.Database
+	}
+	normalized.ID = existing.ID
+	normalized.UID = existing.UID
+
+	dataBytes, _ := json.Marshal(normalized)
+	var targetURL string
+	if existing.UID != "" {
+		targetURL = fmt.Sprintf("%s/api/datasources/uid/%s", grafanaURL, existing.UID)
+	} else {
+		targetURL = fmt.Sprintf("%s/api/datasources/%d", grafanaURL, existing.ID)
+	}
+
+	req, err := http.NewRequest("PUT", targetURL, bytes.NewReader(dataBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(user, pass)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update datasource: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to update datasource (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	msg := fmt.Sprintf("Datasource %q updated successfully", normalized.Name)
+	if testConnection && existing.UID != "" {
+		if healthRes, hErr := s.TestDatasourceHealth(ctx, existing.UID, clientOpts); hErr == nil {
+			msg = fmt.Sprintf("%s (Health: %s - %s)", msg, healthRes.Status, healthRes.Message)
+		}
+	}
+
+	return &schema.SingleDatasourceResult{
+		Service:        normalized.Name,
+		DatasourceName: normalized.Name,
+		DatasourceUID:  existing.UID,
+		DatasourceID:   existing.ID,
+		Status:         "UPDATED",
+		Message:        msg,
+		LatencyMs:      float64(time.Since(start).Milliseconds()),
+		IsHealthy:      true,
+	}, nil
+}
+
+func (s *GrafanaService) DeleteDatasource(ctx context.Context, idOrUid string, clientOpts types.ClientOptions) (*types.DeleteDatasourceResult, error) {
+	_, endSpan := s.tracer.StartSpan(ctx, "llmobs.grafana.delete_datasource")
+	defer endSpan()
+
+	client, grafanaURL, user, pass := s.resolveClient(clientOpts)
+	existing, err := s.GetDatasource(ctx, idOrUid, clientOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	var deleteURL string
+	if existing.UID != "" {
+		deleteURL = fmt.Sprintf("%s/api/datasources/uid/%s", grafanaURL, existing.UID)
+	} else {
+		deleteURL = fmt.Sprintf("%s/api/datasources/%d", grafanaURL, existing.ID)
+	}
+
+	req, err := http.NewRequest("DELETE", deleteURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(user, pass)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete datasource: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("delete failed (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	return &types.DeleteDatasourceResult{
+		UID:     existing.UID,
+		Message: fmt.Sprintf("Datasource %q (UID: %s) deleted successfully", existing.Name, existing.UID),
+		Success: true,
+	}, nil
+}
+
+func (s *GrafanaService) TestDatasourceHealth(ctx context.Context, idOrUid string, clientOpts types.ClientOptions) (*types.DatasourceHealthResult, error) {
+	_, endSpan := s.tracer.StartSpan(ctx, "llmobs.grafana.test_datasource_health")
+	defer endSpan()
+
+	client, grafanaURL, user, pass := s.resolveClient(clientOpts)
+	start := time.Now()
+
+	existing, err := s.GetDatasource(ctx, idOrUid, clientOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	healthURL := fmt.Sprintf("%s/api/datasources/uid/%s/health", grafanaURL, existing.UID)
+	if existing.UID == "" {
+		healthURL = fmt.Sprintf("%s/api/datasources/%d/health", grafanaURL, existing.ID)
+	}
+
+	req, err := http.NewRequest("GET", healthURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(user, pass)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return &types.DatasourceHealthResult{
+			UID:       existing.UID,
+			Name:      existing.Name,
+			Status:    "DOWN",
+			Message:   fmt.Sprintf("HTTP dial error: %v", err),
+			LatencyMs: float64(time.Since(start).Milliseconds()),
+			IsHealthy: false,
+		}, nil
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
+	var healthJson map[string]interface{}
+	_ = json.Unmarshal(body, &healthJson)
+
+	statusStr := "UNKNOWN"
+	msgStr := string(body)
+	isHealthy := false
+
+	if sVal, ok := healthJson["status"].(string); ok {
+		statusStr = sVal
+		if strings.EqualFold(statusStr, "OK") || strings.EqualFold(statusStr, "SUCCESS") {
+			isHealthy = true
+		}
+	}
+	if mVal, ok := healthJson["message"].(string); ok {
+		msgStr = mVal
+	}
+
+	return &types.DatasourceHealthResult{
+		UID:       existing.UID,
+		Name:      existing.Name,
+		Status:    statusStr,
+		Message:   msgStr,
+		LatencyMs: float64(time.Since(start).Milliseconds()),
+		IsHealthy: isHealthy,
+	}, nil
+}
+
 func (s *GrafanaService) SyncDatasources(ctx context.Context, opts schema.DatasourceSyncOptions) (schema.DatasourceSyncReport, error) {
 	_, endSpan := s.tracer.StartSpan(ctx, "llmobs.grafana.sync_datasources")
 	defer endSpan()
 
-	grafanaURL := opts.GrafanaURL
-	if grafanaURL == "" {
-		grafanaURL = "http://localhost:31415"
+	clientOpts := types.ClientOptions{
+		GrafanaURL: opts.GrafanaURL,
+		Username:   opts.GrafanaUser,
+		Password:   opts.GrafanaPass,
+		Timeout:    opts.Timeout,
 	}
-	grafanaURL = strings.TrimRight(grafanaURL, "/")
-
-	user := opts.GrafanaUser
-	if user == "" {
-		user = "admin"
-	}
-	pass := opts.GrafanaPass
-	if pass == "" {
-		pass = s.getEnv("GF_SECURITY_ADMIN_PASSWORD", "llmobs_admin_password")
-	}
-
-	timeout := opts.Timeout
-	if timeout == 0 {
-		timeout = 10 * time.Second
-	}
-	client := &http.Client{Timeout: timeout}
+	client, grafanaURL, user, pass := s.resolveClient(clientOpts)
 
 	existingDS, activePass, err := s.fetchExistingDatasources(client, grafanaURL, user, pass)
 	if err != nil {
@@ -96,6 +403,31 @@ func (s *GrafanaService) SyncDatasources(ctx context.Context, opts schema.Dataso
 	}
 
 	return report, nil
+}
+
+func (s *GrafanaService) resolveClient(opts types.ClientOptions) (*http.Client, string, string, string) {
+	url := opts.GrafanaURL
+	if url == "" {
+		url = "http://localhost:31415"
+	}
+	url = strings.TrimRight(url, "/")
+
+	user := opts.Username
+	if user == "" {
+		user = "admin"
+	}
+
+	pass := opts.Password
+	if pass == "" {
+		pass = s.getEnv("GF_SECURITY_ADMIN_PASSWORD", "llmobs_admin_password")
+	}
+
+	timeout := opts.Timeout
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+
+	return &http.Client{Timeout: timeout}, url, user, pass
 }
 
 func (s *GrafanaService) fetchExistingDatasources(client *http.Client, grafanaURL, user, pass string) ([]schema.DatasourcePayload, string, error) {
@@ -309,14 +641,20 @@ func (s *GrafanaService) upsertAndTestDatasource(
 	if uid, ok := savedObj["uid"].(string); ok && uid != "" {
 		existingUID = uid
 	}
+	if idVal, ok := savedObj["id"].(float64); ok {
+		existingID = int64(idVal)
+	}
 	if ds, ok := savedObj["datasource"].(map[string]interface{}); ok {
 		if uid, ok := ds["uid"].(string); ok && uid != "" {
 			existingUID = uid
 		}
+		if idVal, ok := ds["id"].(float64); ok {
+			existingID = int64(idVal)
+		}
 	}
 
 	msg := "Datasource provisioned & configured"
-	if existingID > 0 {
+	if existingUID != "" || existingID > 0 {
 		msg = "Datasource updated & synchronized"
 	}
 
@@ -329,7 +667,7 @@ func (s *GrafanaService) upsertAndTestDatasource(
 			hBody, _ := io.ReadAll(io.LimitReader(hResp.Body, 4096))
 			var hJson map[string]interface{}
 			if json.Unmarshal(hBody, &hJson) == nil {
-				if status, ok := hJson["status"].(string); ok && status == "OK" {
+				if status, ok := hJson["status"].(string); ok && (strings.EqualFold(status, "OK") || strings.EqualFold(status, "SUCCESS")) {
 					if m, ok := hJson["message"].(string); ok {
 						msg = fmt.Sprintf("%s (Health: %s - %s)", msg, status, m)
 					}
@@ -344,6 +682,7 @@ func (s *GrafanaService) upsertAndTestDatasource(
 		Service:        payload.Name,
 		DatasourceName: payload.Name,
 		DatasourceUID:  existingUID,
+		DatasourceID:   existingID,
 		Status:         "CONFIGURED",
 		Message:        msg,
 		LatencyMs:      float64(time.Since(start).Milliseconds()),
