@@ -29,18 +29,21 @@ import (
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/rules"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/schema"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/types"
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/ports"
 )
 
 type GrafanaService struct {
-	tracer  ports.TracerPort
-	baseDir string
+	tracer   ports.TracerPort
+	baseDir  string
+	resolver *paths.PathResolver
 }
 
 func NewGrafanaService(tracer ports.TracerPort, baseDir string) *GrafanaService {
 	return &GrafanaService{
-		tracer:  tracer,
-		baseDir: baseDir,
+		tracer:   tracer,
+		baseDir:  baseDir,
+		resolver: paths.NewPathResolver(baseDir),
 	}
 }
 
@@ -925,21 +928,15 @@ func (s *GrafanaService) SyncDatasources(ctx context.Context, opts schema.Dataso
 func (s *GrafanaService) resolveClient(opts types.ClientOptions) (string, string, string, *http.Client) {
 	url := opts.GrafanaURL
 	if url == "" {
-		url = s.getEnv("GRAFANA_URL", "http://localhost:31415")
+		url = s.resolver.ResolveServiceURL("grafana", "http://localhost:31415")
 	}
 	user := opts.Username
 	if user == "" {
-		user = s.getEnv("GF_SECURITY_ADMIN_USER", "admin")
+		user = s.resolver.ResolveServiceUser("grafana", "admin")
 	}
 	pass := opts.Password
 	if pass == "" {
-		pass = s.getEnv("GF_SECURITY_ADMIN_PASSWORD", "")
-		if pass == "" {
-			pass = s.getEnv("GRAFANA_ADMIN_PASSWORD", "")
-		}
-		if pass == "" {
-			pass = "llmobs_admin_password"
-		}
+		pass = s.resolver.ResolveServicePassword("grafana", "")
 	}
 	timeout := opts.Timeout
 	if timeout <= 0 {
@@ -955,15 +952,17 @@ func (s *GrafanaService) buildServiceDatasourcePayload(svc string) (schema.Datas
 
 	switch svcLower {
 	case "alloydb", "postgres", "postgresql", "db":
-		user := s.getEnv("ALLOYDB_USER", "admin")
-		pass := s.getEnv("ALLOYDB_PASSWORD", "llmobs_s3cret_2026")
-		db := s.getEnv("ALLOYDB_DB", "llm_observability")
+		user := s.resolver.ResolveServiceUser("alloydb", "admin")
+		pass := s.resolver.ResolveServicePassword("alloydb", "")
+		db := s.resolver.ResolveServiceDatabase("alloydb", "llm_observability")
+		host := s.resolver.ResolveServiceHost("alloydb", "llmobs-alloydb")
+		port := s.resolver.ResolveServicePort("alloydb", 5432)
 		return schema.DatasourcePayload{
 			Name:      "AlloyDB",
 			Type:      "grafana-postgresql-datasource",
 			TypeName:  "PostgreSQL",
 			Access:    "proxy",
-			URL:       "llmobs-alloydb:5432",
+			URL:       fmt.Sprintf("%s:%d", host, port),
 			User:      user,
 			Database:  db,
 			BasicAuth: false,
@@ -981,25 +980,30 @@ func (s *GrafanaService) buildServiceDatasourcePayload(svc string) (schema.Datas
 		}, true
 
 	case "clickhouse", "analytics", "ch":
-		user := s.getEnv("CLICKHOUSE_USER", "default")
-		pass := s.getEnv("CLICKHOUSE_PASSWORD", "llmobs_clickhouse_s3cret_2026")
-		db := s.getEnv("CLICKHOUSE_DB", "llm_telemetry_analytics")
+		user := s.resolver.ResolveServiceUser("clickhouse", "default")
+		pass := s.resolver.ResolveServicePassword("clickhouse", "")
+		db := s.resolver.ResolveServiceDatabase("clickhouse", "llm_telemetry_analytics")
+		host := s.resolver.ResolveServiceHost("clickhouse", "llmobs-clickhouse")
+		port := s.resolver.GetServiceDefinition("clickhouse").TCPPort
+		if port <= 0 {
+			port = 9000
+		}
 		return schema.DatasourcePayload{
 			Name:      "ClickHouse",
 			Type:      "grafana-clickhouse-datasource",
 			TypeName:  "ClickHouse",
 			Access:    "proxy",
-			URL:       "llmobs-clickhouse:9000",
+			URL:       fmt.Sprintf("%s:%d", host, port),
 			User:      user,
 			Database:  db,
 			BasicAuth: false,
 			IsDefault: false,
 			JSONData: map[string]interface{}{
-				"port":       9000,
-				"server":     "llmobs-clickhouse",
-				"protocol":   "native",
-				"secure":     false,
-				"defaultDb":  db,
+				"port":          port,
+				"server":        host,
+				"protocol":      "native",
+				"secure":        false,
+				"defaultDb":     db,
 				"tlsSkipVerify": true,
 			},
 			SecureJSONData: map[string]string{
@@ -1008,20 +1012,26 @@ func (s *GrafanaService) buildServiceDatasourcePayload(svc string) (schema.Datas
 		}, true
 
 	case "redis", "cache", "spend":
-		pass := s.getEnv("REDIS_PASSWORD", "llmobs_redis_s3cret_2024")
+		pass := s.resolver.ResolveServicePassword("redis", "")
+		url := s.resolver.ResolveServiceURL("redis", "")
+		if url == "" {
+			host := s.resolver.ResolveServiceHost("redis", "llmobs-redis")
+			port := s.resolver.ResolveServicePort("redis", 6379)
+			url = fmt.Sprintf("redis://%s:%d", host, port)
+		}
 		return schema.DatasourcePayload{
 			Name:      "Redis",
 			Type:      "redis-datasource",
 			TypeName:  "Redis",
 			Access:    "proxy",
-			URL:       "redis://llmobs-redis:6379",
+			URL:       url,
 			BasicAuth: false,
 			IsDefault: false,
 			JSONData: map[string]interface{}{
-				"poolSize":   5,
-				"timeout":    10,
+				"poolSize":     5,
+				"timeout":      10,
 				"pingInterval": 0,
-				"pipeline":   false,
+				"pipeline":     false,
 			},
 			SecureJSONData: map[string]string{
 				"password": pass,
@@ -1029,12 +1039,13 @@ func (s *GrafanaService) buildServiceDatasourcePayload(svc string) (schema.Datas
 		}, true
 
 	case "tempo", "tracing", "traces":
+		url := s.resolver.ResolveServiceURL("tempo", "http://llmobs-tempo:3200")
 		return schema.DatasourcePayload{
 			Name:      "Tempo",
 			Type:      "tempo",
 			TypeName:  "Tempo",
 			Access:    "proxy",
-			URL:       "http://llmobs-tempo:3200",
+			URL:       url,
 			BasicAuth: false,
 			IsDefault: true,
 			JSONData: map[string]interface{}{
@@ -1053,6 +1064,33 @@ func (s *GrafanaService) buildServiceDatasourcePayload(svc string) (schema.Datas
 					"enabled": true,
 				},
 			},
+		}, true
+
+	case "prometheus", "prom", "metrics":
+		url := s.resolver.ResolveServiceURL("prometheus", "http://llmobs-prometheus:9090")
+		return schema.DatasourcePayload{
+			Name:      "Prometheus",
+			Type:      "prometheus",
+			TypeName:  "Prometheus",
+			Access:    "proxy",
+			URL:       url,
+			BasicAuth: false,
+			IsDefault: false,
+			JSONData: map[string]interface{}{
+				"httpMethod": "POST",
+			},
+		}, true
+
+	case "loki", "logs":
+		url := s.resolver.ResolveServiceURL("loki", "http://llmobs-loki:3100")
+		return schema.DatasourcePayload{
+			Name:      "Loki",
+			Type:      "loki",
+			TypeName:  "Loki",
+			Access:    "proxy",
+			URL:       url,
+			BasicAuth: false,
+			IsDefault: false,
 		}, true
 
 	default:
@@ -1196,32 +1234,5 @@ func (s *GrafanaService) provisionSingleDatasource(ctx context.Context, client *
 }
 
 func (s *GrafanaService) getEnv(key, fallback string) string {
-	val := os.Getenv(key)
-	if val != "" {
-		return val
-	}
-	candidatePaths := []string{
-		filepath.Join(s.baseDir, "packages", "platform-orchestrator", ".env"),
-		filepath.Join(s.baseDir, ".env"),
-		filepath.Join(s.baseDir, "environments", ".env"),
-		"packages/platform-orchestrator/.env",
-		".env",
-	}
-	for _, envPath := range candidatePaths {
-		data, err := os.ReadFile(envPath)
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "#") {
-				continue
-			}
-			parts := strings.SplitN(trimmed, "=", 2)
-			if len(parts) == 2 && strings.TrimSpace(parts[0]) == key {
-				return strings.Trim(parts[1], `"' `)
-			}
-		}
-	}
-	return fallback
+	return s.resolver.ResolveEnvOrConfig(key, fallback)
 }

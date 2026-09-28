@@ -21,7 +21,12 @@ ALGORITHM BLUEPRINT:
 */
 package schema
 
-import "time"
+import (
+	"fmt"
+	"time"
+
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
+)
 
 type SingleProbeResult struct {
 	Service   string  `json:"service"`
@@ -65,12 +70,28 @@ func DefaultDeepProbeConfigs(primaryHost string) []DeepProbeConfig {
 	if primaryHost == "" {
 		primaryHost = "localhost"
 	}
+	resolver := paths.NewPathResolver("")
+
+	alloyUser := resolver.ResolveServiceUser("alloydb", "admin")
+	alloyPass := resolver.ResolveServicePassword("alloydb", "")
+	alloyDb := resolver.ResolveServiceDatabase("alloydb", "llm_observability")
+
+	redisPass := resolver.ResolveServicePassword("redis", "")
+
+	chUser := resolver.ResolveServiceUser("clickhouse", "default")
+	chPass := resolver.ResolveServicePassword("clickhouse", "")
+	chDb := resolver.ResolveServiceDatabase("clickhouse", "llm_telemetry_analytics")
+
+	grafUser := resolver.ResolveServiceUser("grafana", "admin")
+	grafPass := resolver.ResolveServicePassword("grafana", "")
+	grafURL := resolver.ResolveServiceURL("grafana", fmt.Sprintf("http://%s:31415", primaryHost))
+
 	return []DeepProbeConfig{
-		{Service: "alloydb", Host: primaryHost, Port: 31420, Timeout: 5 * time.Second, Container: "alloydb", Username: "admin", Password: "llmobs_s3cret_2026", Database: "llm_observability", Profiles: []string{"alloydb", "db", "workflows", "stateful", "full"}},
-		{Service: "redis", Host: primaryHost, Port: 31413, Timeout: 5 * time.Second, Container: "redis-ledger", Password: "llmobs_redis_s3cret_2024", Profiles: []string{"redis", "db", "stateful", "full"}},
+		{Service: "alloydb", Host: primaryHost, Port: 31420, Timeout: 5 * time.Second, Container: "alloydb", Username: alloyUser, Password: alloyPass, Database: alloyDb, Profiles: []string{"alloydb", "db", "workflows", "stateful", "full"}},
+		{Service: "redis", Host: primaryHost, Port: 31413, Timeout: 5 * time.Second, Container: "redis-ledger", Password: redisPass, Profiles: []string{"redis", "db", "stateful", "full"}},
 		{Service: "kafka", Host: primaryHost, Port: 31414, Timeout: 5 * time.Second, KafkaTopic: "llmobs-health-probe", Profiles: []string{"kafka", "streaming", "stateful", "full"}},
-		{Service: "clickhouse", Host: primaryHost, Port: 31421, Timeout: 5 * time.Second, Username: "default", Password: "llmobs_clickhouse_s3cret_2026", ClickHouseDB: "llm_observability", Profiles: []string{"clickhouse", "analytics", "stateful", "full"}},
-		{Service: "grafana", Host: "localhost", Port: 31415, Timeout: 5 * time.Second, GrafanaURL: "http://localhost:31415", GrafanaUser: "admin", GrafanaPass: "llmobs_admin_password", Profiles: []string{"grafana", "tracing", "stateless", "full"}},
+		{Service: "clickhouse", Host: primaryHost, Port: 31421, Timeout: 5 * time.Second, Username: chUser, Password: chPass, ClickHouseDB: chDb, Profiles: []string{"clickhouse", "analytics", "stateful", "full"}},
+		{Service: "grafana", Host: primaryHost, Port: 31415, Timeout: 5 * time.Second, GrafanaURL: grafURL, GrafanaUser: grafUser, GrafanaPass: grafPass, Profiles: []string{"grafana", "tracing", "stateless", "full"}},
 		{Service: "tempo", Host: primaryHost, Port: 31416, Timeout: 5 * time.Second, Profiles: []string{"tempo", "tracing", "stateless", "full"}},
 		{Service: "temporal", Host: primaryHost, Port: 31424, Timeout: 5 * time.Second, TemporalNS: "default", Profiles: []string{"temporal", "workflows", "stateless", "full"}},
 		{Service: "otel-collector", Host: "localhost", Port: 31417, Timeout: 5 * time.Second, OtelGRPCPort: 31418, Profiles: []string{"otel", "otel-collector", "tracing", "stateless", "full"}},

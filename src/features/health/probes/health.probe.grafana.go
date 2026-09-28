@@ -30,20 +30,22 @@ import (
 	"time"
 
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/health/schema"
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
 )
 
 func ProbeGrafana(cfg schema.DeepProbeConfig) schema.SingleProbeResult {
+	resolver := paths.NewPathResolver("")
 	grafanaURL := cfg.GrafanaURL
 	if grafanaURL == "" {
-		grafanaURL = fmt.Sprintf("http://%s:%d", cfg.Host, cfg.Port)
+		grafanaURL = resolver.ResolveServiceURL("grafana", fmt.Sprintf("http://%s:%d", cfg.Host, cfg.Port))
 	}
 	grafanaUser := cfg.GrafanaUser
 	if grafanaUser == "" {
-		grafanaUser = "admin"
+		grafanaUser = resolver.ResolveServiceUser("grafana", "admin")
 	}
 	grafanaPass := cfg.GrafanaPass
 	if grafanaPass == "" {
-		grafanaPass = "admin"
+		grafanaPass = resolver.ResolveServicePassword("grafana", "")
 	}
 	timeout := cfg.Timeout
 	if timeout == 0 {
@@ -89,10 +91,7 @@ func ProbeGrafana(cfg schema.DeepProbeConfig) schema.SingleProbeResult {
 	defer dsResp.Body.Close()
 
 	if dsResp.StatusCode == 401 {
-		fallbackPass := "admin"
-		if grafanaPass == "admin" {
-			fallbackPass = "llmobs_admin_password"
-		}
+		fallbackPass := resolver.ResolveServicePassword("grafana", "admin")
 		reqRetry, _ := http.NewRequest("GET", grafanaURL+"/api/datasources", nil)
 		reqRetry.SetBasicAuth(grafanaUser, fallbackPass)
 		if retryResp, err := client.Do(reqRetry); err == nil && retryResp.StatusCode == 200 {

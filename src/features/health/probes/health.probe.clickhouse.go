@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/health/schema"
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
 )
 
 func ProbeClickHouse(cfg schema.DeepProbeConfig) schema.SingleProbeResult {
@@ -70,13 +71,15 @@ func ProbeClickHouse(cfg schema.DeepProbeConfig) schema.SingleProbeResult {
 	if err != nil {
 		return failProbe("clickhouse", start, fmt.Sprintf("request build failed: %v", err))
 	}
+
+	resolver := paths.NewPathResolver("")
 	user := cfg.Username
 	if user == "" {
-		user = "default"
+		user = resolver.ResolveServiceUser("clickhouse", "default")
 	}
 	pass := cfg.Password
 	if pass == "" {
-		pass = "llmobs_clickhouse_s3cret_2026"
+		pass = resolver.ResolveServicePassword("clickhouse", "")
 	}
 	req.Header.Set("X-ClickHouse-User", user)
 	req.Header.Set("X-ClickHouse-Key", pass)

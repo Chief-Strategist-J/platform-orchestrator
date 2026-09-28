@@ -16,25 +16,26 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/gdpr/schema"
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/ports"
 )
 
 type GDPRService struct {
 	tracer        ports.TracerPort
 	workspaceRoot string
+	resolver      *paths.PathResolver
 }
 
 func NewGDPRService(tracer ports.TracerPort, workspaceRoot string) *GDPRService {
 	return &GDPRService{
 		tracer:        tracer,
 		workspaceRoot: workspaceRoot,
+		resolver:      paths.NewPathResolver(workspaceRoot),
 	}
 }
 
@@ -78,8 +79,15 @@ func (s *GDPRService) ExecuteErasure(ctx context.Context, req schema.ErasureRequ
 }
 
 func (s *GDPRService) purgeClickHouse(ctx context.Context, targetID string) error {
+	chDb := s.resolver.ResolveServiceDatabase("clickhouse", "llm_telemetry_analytics")
+	chHost := s.resolver.ResolveServiceHost("clickhouse", "localhost")
+	chPort := s.resolver.GetServiceDefinition("clickhouse").HTTPPort
+	if chPort <= 0 {
+		chPort = 31421
+	}
+
 	query := fmt.Sprintf("ALTER TABLE telemetry_spans DELETE WHERE user_id = '%s' OR customer_id = '%s';", targetID, targetID)
-	url := "http://localhost:31421/?database=llm_telemetry_analytics"
+	url := fmt.Sprintf("http://%s:%d/?database=%s", chHost, chPort, chDb)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(query))
 	if err != nil {
@@ -97,10 +105,9 @@ func (s *GDPRService) purgeClickHouse(ctx context.Context, targetID string) erro
 }
 
 func (s *GDPRService) purgeAlloyDB(ctx context.Context, targetID string) error {
-	envFile := filepath.Join(s.workspaceRoot, ".env")
-	dbUser := s.getEnvVar(envFile, "ALLOYDB_USER", "admin")
-	dbName := s.getEnvVar(envFile, "ALLOYDB_DB", "llm_observability")
-	dbPw := s.getEnvVar(envFile, "ALLOYDB_PASSWORD", "llmobs_s3cret_2026")
+	dbUser := s.resolver.ResolveServiceUser("alloydb", "admin")
+	dbName := s.resolver.ResolveServiceDatabase("alloydb", "llm_observability")
+	dbPw := s.resolver.ResolveServicePassword("alloydb", "")
 
 	sql := fmt.Sprintf("DELETE FROM user_metadata WHERE user_id = '%s';", targetID)
 	cmd := exec.CommandContext(ctx, "docker", "exec", "-e", fmt.Sprintf("PGPASSWORD=%s", dbPw), "llmobs-alloydb-db", "psql", "-U", dbUser, "-d", dbName, "-c", sql)
@@ -108,27 +115,11 @@ func (s *GDPRService) purgeAlloyDB(ctx context.Context, targetID string) error {
 }
 
 func (s *GDPRService) recordAuditLog(ctx context.Context, targetID string) error {
-	envFile := filepath.Join(s.workspaceRoot, ".env")
-	dbUser := s.getEnvVar(envFile, "ALLOYDB_USER", "admin")
-	dbName := s.getEnvVar(envFile, "ALLOYDB_DB", "llm_observability")
-	dbPw := s.getEnvVar(envFile, "ALLOYDB_PASSWORD", "llmobs_s3cret_2026")
+	dbUser := s.resolver.ResolveServiceUser("alloydb", "admin")
+	dbName := s.resolver.ResolveServiceDatabase("alloydb", "llm_observability")
+	dbPw := s.resolver.ResolveServicePassword("alloydb", "")
 
 	sql := fmt.Sprintf("INSERT INTO security_audit_logs (timestamp, actor_id, action, resource, details) VALUES (NOW(), 'system_gdpr', 'ERASE_USER_DATA', '%s', 'GDPR erasure executed for user %s');", targetID, targetID)
 	cmd := exec.CommandContext(ctx, "docker", "exec", "-e", fmt.Sprintf("PGPASSWORD=%s", dbPw), "llmobs-alloydb-db", "psql", "-U", dbUser, "-d", dbName, "-c", sql)
 	return cmd.Run()
-}
-
-func (s *GDPRService) getEnvVar(envPath string, key string, fallback string) string {
-	data, err := os.ReadFile(envPath)
-	if err != nil {
-		return fallback
-	}
-	lines := strings.Split(string(data), "\n")
-	for _, l := range lines {
-		if strings.HasPrefix(l, key+"=") {
-			val := strings.TrimPrefix(l, key+"=")
-			return strings.Trim(val, `"' `)
-		}
-	}
-	return fallback
 }

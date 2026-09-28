@@ -28,6 +28,73 @@ paths:
     - "traefik"
     - "alloydb"
 
+services:
+  grafana:
+    url: "http://localhost:31415"
+    port: 31415
+    user: "admin"
+    envUrl: "GRAFANA_URL"
+    envUser: "GF_SECURITY_ADMIN_USER"
+    envPassword: "GF_SECURITY_ADMIN_PASSWORD"
+    defaultPassword: "llmobs_admin_password"
+  alloydb:
+    host: "llmobs-alloydb"
+    port: 5432
+    user: "admin"
+    database: "llm_observability"
+    envHost: "ALLOYDB_HOST"
+    envPort: "ALLOYDB_PORT"
+    envUser: "ALLOYDB_USER"
+    envPassword: "ALLOYDB_PASSWORD"
+    envDatabase: "ALLOYDB_DB"
+    defaultPassword: "llmobs_s3cret_2026"
+  clickhouse:
+    host: "llmobs-clickhouse"
+    httpPort: 8123
+    tcpPort: 9000
+    user: "default"
+    database: "llm_telemetry_analytics"
+    envHost: "CLICKHOUSE_HOST"
+    envPort: "CLICKHOUSE_PORT"
+    envUser: "CLICKHOUSE_USER"
+    envPassword: "CLICKHOUSE_PASSWORD"
+    envDatabase: "CLICKHOUSE_DB"
+    defaultPassword: "llmobs_clickhouse_s3cret_2026"
+  redis:
+    host: "llmobs-redis"
+    port: 6379
+    url: "redis://llmobs-redis:6379"
+    envHost: "REDIS_HOST"
+    envPort: "REDIS_PORT"
+    envPassword: "REDIS_PASSWORD"
+    defaultPassword: "llmobs_redis_s3cret_2024"
+  tempo:
+    url: "http://llmobs-tempo:3200"
+    port: 3200
+    envUrl: "TEMPO_URL"
+  prometheus:
+    url: "http://llmobs-prometheus:9090"
+    port: 9090
+    envUrl: "PROMETHEUS_URL"
+  loki:
+    url: "http://llmobs-loki:3100"
+    port: 3100
+    envUrl: "LOKI_URL"
+  traefik:
+    url: "http://localhost:8080"
+    port: 8080
+    envUrl: "TRAEFIK_URL"
+  kafka:
+    host: "llmobs-kafka"
+    port: 9092
+    envHost: "KAFKA_HOST"
+    envPort: "KAFKA_PORT"
+  otel:
+    host: "llmobs-otel-collector"
+    grpcPort: 4317
+    httpPort: 4318
+    envHost: "OTEL_EXPORTER_OTLP_ENDPOINT"
+
 setup:
   images:
     - "traefik:v2.10"

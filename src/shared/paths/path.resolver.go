@@ -35,6 +35,24 @@ import (
 
 var defaultMarkers = []string{"env.schema", "default.yaml", "certs", "traefik", "alloydb"}
 
+type ServiceDefinition struct {
+	URL             string `yaml:"url" json:"url"`
+	Host            string `yaml:"host" json:"host"`
+	Port            int    `yaml:"port" json:"port"`
+	HTTPPort        int    `yaml:"httpPort" json:"httpPort"`
+	TCPPort         int    `yaml:"tcpPort" json:"tcpPort"`
+	GRPCPort        int    `yaml:"grpcPort" json:"grpcPort"`
+	User            string `yaml:"user" json:"user"`
+	Database        string `yaml:"database" json:"database"`
+	EnvURL          string `yaml:"envUrl" json:"envUrl"`
+	EnvHost         string `yaml:"envHost" json:"envHost"`
+	EnvPort         string `yaml:"envPort" json:"envPort"`
+	EnvUser         string `yaml:"envUser" json:"envUser"`
+	EnvPassword     string `yaml:"envPassword" json:"envPassword"`
+	EnvDatabase     string `yaml:"envDatabase" json:"envDatabase"`
+	DefaultPassword string `yaml:"defaultPassword" json:"defaultPassword"`
+}
+
 type SetupCredentialConfig struct {
 	Prompt  string `yaml:"prompt" json:"prompt"`
 	EnvKey  string `yaml:"envKey" json:"envKey"`
@@ -74,7 +92,8 @@ type YAMLConfig struct {
 	Paths struct {
 		Markers []string `yaml:"markers"`
 	} `yaml:"paths"`
-	Setup SetupYAMLConfig `yaml:"setup"`
+	Services map[string]ServiceDefinition `yaml:"services"`
+	Setup    SetupYAMLConfig              `yaml:"setup"`
 }
 
 type PathResolver struct {
@@ -510,6 +529,142 @@ func (r *PathResolver) GetSetupComposeFile() string {
 
 func (r *PathResolver) GetSetupCredentials() map[string]SetupCredentialConfig {
 	return r.SetupConfig().Credentials
+}
+
+func (r *PathResolver) ReadEnvMap() map[string]string {
+	result := make(map[string]string)
+	data, err := os.ReadFile(r.EnvFile())
+	if err != nil {
+		return result
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if idx := strings.Index(trimmed, "="); idx > 0 {
+			k := strings.TrimSpace(trimmed[:idx])
+			v := strings.Trim(strings.TrimSpace(trimmed[idx+1:]), "\"'")
+			result[k] = v
+		}
+	}
+	return result
+}
+
+func (r *PathResolver) ResolveEnvOrConfig(envKey, fallback string) string {
+	if envKey != "" {
+		if val := os.Getenv(envKey); val != "" {
+			return val
+		}
+		envMap := r.ReadEnvMap()
+		if val, ok := envMap[envKey]; ok && val != "" {
+			return val
+		}
+	}
+	return fallback
+}
+
+func (r *PathResolver) GetServicesConfig() map[string]ServiceDefinition {
+	if r.parsedConfig != nil && len(r.parsedConfig.Services) > 0 {
+		return r.parsedConfig.Services
+	}
+	return make(map[string]ServiceDefinition)
+}
+
+func (r *PathResolver) GetServiceDefinition(service string) ServiceDefinition {
+	svcLower := strings.ToLower(strings.TrimSpace(service))
+	services := r.GetServicesConfig()
+	if def, ok := services[svcLower]; ok {
+		return def
+	}
+	for k, def := range services {
+		if strings.EqualFold(k, svcLower) {
+			return def
+		}
+	}
+	return ServiceDefinition{}
+}
+
+func (r *PathResolver) ResolveServiceURL(service string, fallback string) string {
+	def := r.GetServiceDefinition(service)
+	if def.EnvURL != "" {
+		if val := r.ResolveEnvOrConfig(def.EnvURL, ""); val != "" {
+			return val
+		}
+	}
+	if def.URL != "" {
+		return def.URL
+	}
+	return fallback
+}
+
+func (r *PathResolver) ResolveServiceUser(service string, fallback string) string {
+	def := r.GetServiceDefinition(service)
+	if def.EnvUser != "" {
+		if val := r.ResolveEnvOrConfig(def.EnvUser, ""); val != "" {
+			return val
+		}
+	}
+	if def.User != "" {
+		return def.User
+	}
+	return fallback
+}
+
+func (r *PathResolver) ResolveServicePassword(service string, fallback string) string {
+	def := r.GetServiceDefinition(service)
+	if def.EnvPassword != "" {
+		if val := r.ResolveEnvOrConfig(def.EnvPassword, ""); val != "" {
+			return val
+		}
+	}
+	if def.DefaultPassword != "" {
+		return def.DefaultPassword
+	}
+	return fallback
+}
+
+func (r *PathResolver) ResolveServiceDatabase(service string, fallback string) string {
+	def := r.GetServiceDefinition(service)
+	if def.EnvDatabase != "" {
+		if val := r.ResolveEnvOrConfig(def.EnvDatabase, ""); val != "" {
+			return val
+		}
+	}
+	if def.Database != "" {
+		return def.Database
+	}
+	return fallback
+}
+
+func (r *PathResolver) ResolveServiceHost(service string, fallback string) string {
+	def := r.GetServiceDefinition(service)
+	if def.EnvHost != "" {
+		if val := r.ResolveEnvOrConfig(def.EnvHost, ""); val != "" {
+			return val
+		}
+	}
+	if def.Host != "" {
+		return def.Host
+	}
+	return fallback
+}
+
+func (r *PathResolver) ResolveServicePort(service string, fallback int) int {
+	def := r.GetServiceDefinition(service)
+	if def.EnvPort != "" {
+		if val := r.ResolveEnvOrConfig(def.EnvPort, ""); val != "" {
+			var p int
+			if _, err := fmt.Sscanf(val, "%d", &p); err == nil && p > 0 {
+				return p
+			}
+		}
+	}
+	if def.Port > 0 {
+		return def.Port
+	}
+	return fallback
 }
 
 func ResolveConfigDir(baseDir string) string {
