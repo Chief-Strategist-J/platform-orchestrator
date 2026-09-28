@@ -436,17 +436,43 @@ func Execute() {
 
 	healthCmd := &cobra.Command{
 		Use:   "health [primaryHost]",
-		Short: "Run concurrent diagnostic health checks across all services",
+		Short: "Run concurrent diagnostic health checks across active services",
+		Long: `Run concurrent diagnostic health checks against platform service endpoints.
+
+By default checks all 10 platform services. Use --profiles to scope checks
+to only the services that were actually started with 'llmobs up <profiles>'.
+
+Examples:
+  llmobs health                              # check all services
+  llmobs health --profiles db,streaming      # check only db+kafka services
+  llmobs health --profiles db,streaming,tracing  # check only started services`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			host := "localhost"
 			if len(args) > 0 {
 				host = args[0]
 			}
-			targets := healthSchema.DefaultHealthTargets(host)
+
+			var targets []healthSchema.ServiceHealthTarget
+			profilesFlag, _ := cmd.Flags().GetString("profiles")
+			if profilesFlag != "" {
+				var activeProfiles []string
+				for _, p := range strings.Split(profilesFlag, ",") {
+					if t := strings.TrimSpace(p); t != "" {
+						activeProfiles = append(activeProfiles, t)
+					}
+				}
+				targets = healthSchema.TargetsForProfiles(host, activeProfiles)
+			} else {
+				targets = healthSchema.DefaultHealthTargets(host)
+			}
+
 			report := healthSvc.RunHealthChecks(context.Background(), targets)
 
 			fmt.Println("=========================================================================")
 			fmt.Printf(" Platform Health Verification (Checked: %d, Healthy: %d)\n", report.CheckedCount, report.HealthyCount)
+			if profilesFlag != "" {
+				fmt.Printf(" Scoped to profiles: %s\n", profilesFlag)
+			}
 			fmt.Println("=========================================================================")
 			fmt.Printf("%-20s %-25s %-12s %s\n", "SERVICE", "ENDPOINT", "STATUS", "LATENCY")
 			fmt.Println("-------------------------------------------------------------------------")
@@ -461,6 +487,8 @@ func Execute() {
 			return nil
 		},
 	}
+	healthCmd.Flags().String("profiles", "", "Comma-separated Docker Compose profiles to scope checks to (e.g. db,streaming,tracing)")
+
 
 	certsCmd := &cobra.Command{
 		Use:   "certs",
