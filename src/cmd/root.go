@@ -829,10 +829,22 @@ func verifyNativeCredentials(service string, workspaceRoot string) error {
 		fmt.Printf("  \033[91m[FAIL]\033[0m AlloyDB (PostgreSQL) -> Connection failed: %s\n", strings.TrimSpace(string(alloyOut)))
 	}
 
-	redisPass := envMap["USER_REDIS_PASSWORD"]
+	redisPass := envMap["REDIS_PASSWORD"]
+	if redisPass == "" {
+		redisPass = envMap[strings.ToUpper(service)+"_REDIS_PASSWORD"]
+	}
+	if redisPass == "" {
+		for k, v := range envMap {
+			if strings.Contains(k, "REDIS_PASSWORD") && v != "" {
+				redisPass = v
+				break
+			}
+		}
+	}
 	if redisPass == "" {
 		redisPass = "llmobs_redis_s3cret_2024"
 	}
+
 	redisCmd := exec.Command("docker", "exec", "llmobs-redis-ledger", "redis-cli", "-a", redisPass, "ping")
 	redisOut, rErr := redisCmd.CombinedOutput()
 	if rErr == nil && strings.Contains(string(redisOut), "PONG") {
@@ -853,6 +865,18 @@ func verifyNativeCredentials(service string, workspaceRoot string) error {
 		fmt.Printf("  \033[92m[PASS]\033[0m Kafka Broker -> TCP connection verified (localhost:31414)\n")
 	} else {
 		fmt.Printf("  \033[91m[FAIL]\033[0m Kafka Broker -> Connection failed: %v\n", kErr)
+	}
+
+	otelConn, oErr := net.DialTimeout("tcp", "localhost:31417", 2*time.Second)
+	if oErr == nil {
+		_ = otelConn.Close()
+		fmt.Printf("  \033[92m[PASS]\033[0m OTel Collector -> TCP connection verified (localhost:31417)\n")
+	}
+
+	regConn, rgErr := net.DialTimeout("tcp", "localhost:31426", 2*time.Second)
+	if rgErr == nil {
+		_ = regConn.Close()
+		fmt.Printf("  \033[92m[PASS]\033[0m Service Registry -> HTTP listener verified (localhost:31426)\n")
 	}
 
 	return nil
