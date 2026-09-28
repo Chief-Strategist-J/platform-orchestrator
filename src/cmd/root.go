@@ -801,7 +801,8 @@ func printConfigReport(report *configSchema.PlatformConfigReport) {
 }
 
 func verifyNativeCredentials(service string, workspaceRoot string) error {
-	fmt.Printf("\nVerifying credentials for service '%s'...\n", service)
+	prefix := strings.ToUpper(strings.ReplaceAll(service, "-", "_"))
+
 	svcDir := filepath.Join(workspaceRoot, "local-services", service)
 	envMap := make(map[string]string)
 	loadEnvMap := func(filename string) {
@@ -822,62 +823,203 @@ func verifyNativeCredentials(service string, workspaceRoot string) error {
 	loadEnvMap(".env.example")
 	loadEnvMap(".env")
 
-	alloyOut, err := exec.Command("docker", "exec", "llmobs-alloydb-db", "psql", "-U", "admin", "-d", "postgres", "-c", "SELECT 1;").CombinedOutput()
-	if err == nil {
-		fmt.Printf("  \033[92m[PASS]\033[0m AlloyDB (PostgreSQL) -> Database connection authenticated\n")
-	} else {
-		fmt.Printf("  \033[91m[FAIL]\033[0m AlloyDB (PostgreSQL) -> Connection failed: %s\n", strings.TrimSpace(string(alloyOut)))
-	}
-
-	redisPass := envMap["REDIS_PASSWORD"]
-	if redisPass == "" {
-		redisPass = envMap[strings.ToUpper(service)+"_REDIS_PASSWORD"]
-	}
-	if redisPass == "" {
-		for k, v := range envMap {
-			if strings.Contains(k, "REDIS_PASSWORD") && v != "" {
-				redisPass = v
-				break
+	getVar := func(keys ...string) string {
+		for _, k := range keys {
+			if v, ok := envMap[k]; ok && v != "" {
+				return v
 			}
 		}
-	}
-	if redisPass == "" {
-		redisPass = "llmobs_redis_s3cret_2024"
+		return ""
 	}
 
-	redisCmd := exec.Command("docker", "exec", "llmobs-redis-ledger", "redis-cli", "-a", redisPass, "ping")
-	redisOut, rErr := redisCmd.CombinedOutput()
-	if rErr == nil && strings.Contains(string(redisOut), "PONG") {
-		fmt.Printf("  \033[92m[PASS]\033[0m Redis Ledger -> Authentication successful (PONG received)\n")
-	} else {
-		rCmd2 := exec.Command("docker", "exec", "llmobs-redis-ledger", "redis-cli", "ping")
-		rOut2, rErr2 := rCmd2.CombinedOutput()
-		if rErr2 == nil && strings.Contains(string(rOut2), "PONG") {
-			fmt.Printf("  \033[92m[PASS]\033[0m Redis Ledger -> Connected without password\n")
-		} else {
-			fmt.Printf("  \033[91m[FAIL]\033[0m Redis Ledger -> Authentication failed: %s\n", strings.TrimSpace(string(redisOut)))
+	serviceComponents := map[string][]string{
+		"user":          {"db", "kafka", "otel"},
+		"auth":          {"db"},
+		"audit":         {"db", "kafka", "analytics", "otel"},
+		"notifications": {"db", "kafka", "otel"},
+		"payment":       {"db", "kafka"},
+		"storage":       {"db", "otel"},
+	}
+
+	components, ok := serviceComponents[service]
+	if !ok {
+		components = []string{"db"}
+	}
+
+	has := func(c string) bool {
+		for _, x := range components {
+			if x == c {
+				return true
+			}
 		}
+		return false
 	}
 
-	conn, kErr := net.DialTimeout("tcp", "localhost:31414", 2*time.Second)
-	if kErr == nil {
-		_ = conn.Close()
-		fmt.Printf("  \033[92m[PASS]\033[0m Kafka Broker -> TCP connection verified (localhost:31414)\n")
+	fmt.Printf("\n\033[94m====================================================\033[0m\n")
+	fmt.Printf("\033[1m CREDENTIAL VERIFICATION: %s SERVICE\033[0m\n", strings.ToUpper(service))
+	fmt.Printf("\033[94m====================================================\033[0m\n\n")
+
+	passed, total := 0, 0
+
+	if has("db") {
+		total++
+		dbUser := getVar(prefix+"_DB_USER", "ALLOYDB_USER", "POSTGRES_USER")
+		if dbUser == "" {
+			dbUser = "admin"
+		}
+		dbPass := getVar(prefix+"_DB_PASSWORD", "ALLOYDB_PASSWORD", "POSTGRES_PASSWORD")
+		if dbPass == "" {
+			dbPass = "llmobs_s3cret_2026"
+		}
+		dbName := getVar(prefix+"_DB_NAME", "ALLOYDB_DB", "POSTGRES_DB")
+		if dbName == "" {
+			dbName = "llm_observability"
+		}
+		dbPort := getVar(prefix+"_DB_PORT", "PORT_ALLOYDB")
+		if dbPort == "" {
+			dbPort = "31420"
+		}
+
+		fmt.Printf("\033[1m1. Database (PostgreSQL / AlloyDB):\033[0m\n")
+		fmt.Printf("   Target: %s@localhost:%s/%s\n", dbUser, dbPort, dbName)
+
+		conn, tcpErr := net.DialTimeout("tcp", "localhost:"+dbPort, 3*time.Second)
+		if tcpErr != nil {
+			fmt.Printf("  \033[91m[FAIL]\033[0m AlloyDB (PostgreSQL) -> Port %s unreachable: %v\n", dbPort, tcpErr)
+		} else {
+			conn.Close()
+			out, execErr := exec.Command(
+				"docker", "exec", "-e", "PGPASSWORD="+dbPass,
+				"llmobs-alloydb-db",
+				"psql", "-U", dbUser, "-d", dbName, "-c", "SELECT 'AUTH_OK' AS status;",
+			).CombinedOutput()
+			if execErr == nil && strings.Contains(string(out), "AUTH_OK") {
+				fmt.Printf("  \033[92m[PASS]\033[0m AlloyDB (PostgreSQL) -> Authenticated & query verified (User: '%s', DB: '%s')\n", dbUser, dbName)
+				passed++
+			} else {
+				fmt.Printf("  \033[91m[FAIL]\033[0m AlloyDB (PostgreSQL) -> Query failed: %s\n", strings.TrimSpace(string(out)))
+			}
+		}
+		fmt.Println()
+	}
+
+	if has("db") {
+		total++
+		redisPass := getVar(prefix+"_REDIS_PASSWORD", "REDIS_PASSWORD")
+		if redisPass == "" {
+			redisPass = "llmobs_redis_s3cret_2024"
+		}
+		redisPort := getVar(prefix+"_REDIS_PORT", "PORT_REDIS")
+		if redisPort == "" {
+			redisPort = "31413"
+		}
+
+		fmt.Printf("\033[1m2. Redis Ledger:\033[0m\n")
+		fmt.Printf("   Target: localhost:%s (auth: ***)\n", redisPort)
+
+		redisCmd := exec.Command("docker", "exec", "llmobs-redis-ledger", "redis-cli", "-a", redisPass, "ping")
+		redisOut, rErr := redisCmd.CombinedOutput()
+		if rErr == nil && strings.Contains(string(redisOut), "PONG") {
+			fmt.Printf("  \033[92m[PASS]\033[0m Redis Ledger -> Authentication successful (PONG received)\n")
+			passed++
+		} else {
+			rCmd2 := exec.Command("docker", "exec", "llmobs-redis-ledger", "redis-cli", "ping")
+			rOut2, rErr2 := rCmd2.CombinedOutput()
+			if rErr2 == nil && strings.Contains(string(rOut2), "PONG") {
+				fmt.Printf("  \033[92m[PASS]\033[0m Redis Ledger -> Connected without password\n")
+				passed++
+			} else {
+				fmt.Printf("  \033[91m[FAIL]\033[0m Redis Ledger -> Authentication failed: %s\n", strings.TrimSpace(string(redisOut)))
+			}
+		}
+		fmt.Println()
+	}
+
+	if has("kafka") {
+		total++
+		kafkaPort := getVar(prefix+"_KAFKA_PORT", "PORT_KAFKA")
+		if kafkaPort == "" {
+			kafkaPort = "31414"
+		}
+
+		fmt.Printf("\033[1m3. Apache Kafka Event Broker:\033[0m\n")
+		fmt.Printf("   Target: localhost:%s\n", kafkaPort)
+
+		conn, kErr := net.DialTimeout("tcp", "localhost:"+kafkaPort, 3*time.Second)
+		if kErr == nil {
+			conn.Close()
+			fmt.Printf("  \033[92m[PASS]\033[0m Kafka Broker -> TCP connection verified (localhost:%s)\n", kafkaPort)
+			passed++
+		} else {
+			fmt.Printf("  \033[91m[FAIL]\033[0m Kafka Broker -> Connection failed: %v\n", kErr)
+		}
+		fmt.Println()
+	}
+
+	if has("analytics") {
+		total++
+		chPort := getVar(prefix+"_CLICKHOUSE_PORT", "PORT_CLICKHOUSE")
+		if chPort == "" {
+			chPort = "31415"
+		}
+
+		fmt.Printf("\033[1m4. ClickHouse Analytics:\033[0m\n")
+		fmt.Printf("   Target: localhost:%s\n", chPort)
+
+		conn, chErr := net.DialTimeout("tcp", "localhost:"+chPort, 3*time.Second)
+		if chErr == nil {
+			conn.Close()
+			fmt.Printf("  \033[92m[PASS]\033[0m ClickHouse -> TCP connection verified (localhost:%s)\n", chPort)
+			passed++
+		} else {
+			fmt.Printf("  \033[91m[FAIL]\033[0m ClickHouse -> Connection failed: %v\n", chErr)
+		}
+		fmt.Println()
+	}
+
+	if has("otel") {
+		total += 2
+		otelHTTP := getVar(prefix+"_OTEL_HTTP_PORT", "PORT_OTEL_HTTP")
+		if otelHTTP == "" {
+			otelHTTP = "31417"
+		}
+		otelGRPC := getVar(prefix+"_OTEL_GRPC_PORT", "PORT_OTEL_GRPC")
+		if otelGRPC == "" {
+			otelGRPC = "31418"
+		}
+
+		fmt.Printf("\033[1m5. OpenTelemetry Collector:\033[0m\n")
+		fmt.Printf("   HTTP Target: http://localhost:%s/v1/traces\n", otelHTTP)
+		fmt.Printf("   gRPC Target: localhost:%s\n", otelGRPC)
+
+		otelConn, oErr := net.DialTimeout("tcp", "localhost:"+otelHTTP, 3*time.Second)
+		if oErr == nil {
+			otelConn.Close()
+			fmt.Printf("  \033[92m[PASS]\033[0m OTel Collector HTTP -> Port %s reachable\n", otelHTTP)
+			passed++
+		} else {
+			fmt.Printf("  \033[91m[FAIL]\033[0m OTel Collector HTTP -> Port %s unreachable: %v\n", otelHTTP, oErr)
+		}
+
+		grpcConn, gErr := net.DialTimeout("tcp", "localhost:"+otelGRPC, 3*time.Second)
+		if gErr == nil {
+			grpcConn.Close()
+			fmt.Printf("  \033[92m[PASS]\033[0m OTel Collector gRPC -> Port %s reachable\n", otelGRPC)
+			passed++
+		} else {
+			fmt.Printf("  \033[91m[FAIL]\033[0m OTel Collector gRPC -> Port %s unreachable: %v\n", otelGRPC, gErr)
+		}
+		fmt.Println()
+	}
+
+	fmt.Printf("\033[94m====================================================\033[0m\n")
+	if passed == total {
+		fmt.Printf("\033[92m\033[1m✓ ALL %d/%d VERIFICATION CHECKS PASSED!\033[0m\n", passed, total)
 	} else {
-		fmt.Printf("  \033[91m[FAIL]\033[0m Kafka Broker -> Connection failed: %v\n", kErr)
+		fmt.Printf("\033[91m\033[1m✗ %d OF %d CHECKS FAILED!\033[0m\n", total-passed, total)
 	}
-
-	otelConn, oErr := net.DialTimeout("tcp", "localhost:31417", 2*time.Second)
-	if oErr == nil {
-		_ = otelConn.Close()
-		fmt.Printf("  \033[92m[PASS]\033[0m OTel Collector -> TCP connection verified (localhost:31417)\n")
-	}
-
-	regConn, rgErr := net.DialTimeout("tcp", "localhost:31426", 2*time.Second)
-	if rgErr == nil {
-		_ = regConn.Close()
-		fmt.Printf("  \033[92m[PASS]\033[0m Service Registry -> HTTP listener verified (localhost:31426)\n")
-	}
+	fmt.Printf("\033[94m====================================================\033[0m\n\n")
 
 	return nil
 }
+
