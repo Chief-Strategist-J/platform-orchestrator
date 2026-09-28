@@ -642,31 +642,87 @@ func Execute() {
 
 	verifyCmd := &cobra.Command{
 		Use:   "verify-credentials [service]",
-		Short: "Verify credentials for local microservices",
+		Short: "Verify credentials and connectivity for a local microservice",
+		Long: `Verify credentials and connectivity for a local microservice against the platform infrastructure.
+
+Defaults are resolved in priority order (highest wins):
+  1. CLI flags (--db-host, --db-port, etc.)
+  2. Service .env  (local-services/<service>/.env)
+  3. Platform .env (packages/platform-orchestrator/.env)
+  4. Built-in fallback defaults
+
+Examples:
+  llmobs verify-credentials user
+  llmobs verify-credentials auth --only db
+  llmobs verify-credentials user --db-port 5433 --kafka-port 9092
+  llmobs verify-credentials audit --only analytics`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			service := "auth"
+			service := "user"
 			if len(args) > 0 {
 				service = args[0]
 			}
-			scriptPath := filepath.Join(workspaceRoot, "local-services", service, "scripts", "verify-credentials.sh")
-			if _, err := os.Stat(scriptPath); err != nil {
-				pyScript := filepath.Join(workspaceRoot, "local-services", service, "scripts", "verify-credentials.py")
-				if _, errPy := os.Stat(pyScript); errPy == nil {
-					pyCmd := exec.Command("python3", append([]string{pyScript}, args[1:]...)...)
-					pyCmd.Dir = filepath.Dir(pyScript)
-					pyCmd.Stdout = os.Stdout
-					pyCmd.Stderr = os.Stderr
-					return pyCmd.Run()
-				}
-				return verifyNativeCredentials(service, workspaceRoot)
+
+			platformEnv := loadEnvFile(filepath.Join(workspaceRoot, "packages", "platform-orchestrator", ".env"))
+			svcEnv := loadEnvFile(filepath.Join(workspaceRoot, "local-services", service, ".env"))
+			if len(svcEnv) == 0 {
+				svcEnv = loadEnvFile(filepath.Join(workspaceRoot, "local-services", service, ".env.example"))
 			}
-			shCmd := exec.Command("bash", append([]string{scriptPath}, args[1:]...)...)
-			shCmd.Dir = filepath.Dir(scriptPath)
-			shCmd.Stdout = os.Stdout
-			shCmd.Stderr = os.Stderr
-			return shCmd.Run()
+
+			resolveCfg := func(flagName, svcKey, platformKey, fallback string) string {
+				if v, _ := cmd.Flags().GetString(flagName); cmd.Flags().Changed(flagName) && v != "" {
+					return v
+				}
+				if v := svcEnv[svcKey]; v != "" {
+					return v
+				}
+				if v := platformEnv[platformKey]; v != "" {
+					return v
+				}
+				return fallback
+			}
+
+			prefix := strings.ToUpper(strings.ReplaceAll(service, "-", "_"))
+
+			cfg := verifyConfig{
+				Service:       service,
+				Only:          mustGetString(cmd, "only"),
+				DBHost:        resolveCfg("db-host", prefix+"_DB_HOST", "ALLOYDB_HOST", "localhost"),
+				DBPort:        resolveCfg("db-port", prefix+"_DB_PORT", "PORT_ALLOYDB", "31420"),
+				DBUser:        resolveCfg("db-user", prefix+"_DB_USER", "ALLOYDB_USER", "admin"),
+				DBPass:        resolveCfg("db-pass", prefix+"_DB_PASSWORD", "ALLOYDB_PASSWORD", ""),
+				DBName:        resolveCfg("db-name", prefix+"_DB_NAME", "ALLOYDB_DB", "llm_observability"),
+				DBContainer:   resolveCfg("db-container", "", "", "llmobs-alloydb-db"),
+				RedisHost:     resolveCfg("redis-host", prefix+"_REDIS_HOST", "REDIS_HOST", "localhost"),
+				RedisPort:     resolveCfg("redis-port", prefix+"_REDIS_PORT", "PORT_REDIS", "31413"),
+				RedisPass:     resolveCfg("redis-pass", prefix+"_REDIS_PASSWORD", "REDIS_PASSWORD", ""),
+				RedisContainer: resolveCfg("redis-container", "", "", "llmobs-redis-ledger"),
+				KafkaHost:     resolveCfg("kafka-host", prefix+"_KAFKA_HOST", "KAFKA_HOST", "localhost"),
+				KafkaPort:     resolveCfg("kafka-port", prefix+"_KAFKA_PORT", "PORT_KAFKA", "31414"),
+				OtelHTTPPort:  resolveCfg("otel-http-port", prefix+"_OTEL_HTTP_PORT", "PORT_OTEL_HTTP", "31417"),
+				OtelGRPCPort:  resolveCfg("otel-grpc-port", prefix+"_OTEL_GRPC_PORT", "PORT_OTEL_GRPC", "31418"),
+				ClickHousePort: resolveCfg("clickhouse-port", prefix+"_CLICKHOUSE_PORT", "PORT_CLICKHOUSE_HTTP", "31421"),
+			}
+
+			return verifyNativeCredentials(cfg)
 		},
 	}
+	verifyCmd.Flags().String("only", "all", "Scope verification to one component: all | db | redis | kafka | otel | analytics")
+	verifyCmd.Flags().String("db-host", "", "Override database host")
+	verifyCmd.Flags().String("db-port", "", "Override database port")
+	verifyCmd.Flags().String("db-user", "", "Override database username")
+	verifyCmd.Flags().String("db-pass", "", "Override database password")
+	verifyCmd.Flags().String("db-name", "", "Override database name")
+	verifyCmd.Flags().String("db-container", "", "Override AlloyDB Docker container name for exec fallback")
+	verifyCmd.Flags().String("redis-host", "", "Override Redis host")
+	verifyCmd.Flags().String("redis-port", "", "Override Redis port")
+	verifyCmd.Flags().String("redis-pass", "", "Override Redis password")
+	verifyCmd.Flags().String("redis-container", "", "Override Redis Docker container name")
+	verifyCmd.Flags().String("kafka-host", "", "Override Kafka broker host")
+	verifyCmd.Flags().String("kafka-port", "", "Override Kafka broker port")
+	verifyCmd.Flags().String("otel-http-port", "", "Override OTel Collector HTTP port")
+	verifyCmd.Flags().String("otel-grpc-port", "", "Override OTel Collector gRPC port")
+	verifyCmd.Flags().String("clickhouse-port", "", "Override ClickHouse HTTP port")
 
 	serverCmd := &cobra.Command{
 		Use:   "server",
@@ -800,53 +856,69 @@ func printConfigReport(report *configSchema.PlatformConfigReport) {
 	fmt.Println("Hint: Run 'llmobs config -i' to interactively edit or 'llmobs config --alloydb-memory=4096M --restart'")
 }
 
-func verifyNativeCredentials(service string, workspaceRoot string) error {
-	prefix := strings.ToUpper(strings.ReplaceAll(service, "-", "_"))
+func mustGetString(cmd *cobra.Command, name string) string {
+	v, _ := cmd.Flags().GetString(name)
+	return v
+}
 
-	svcDir := filepath.Join(workspaceRoot, "local-services", service)
-	envMap := make(map[string]string)
-	loadEnvMap := func(filename string) {
-		p := filepath.Join(svcDir, filename)
-		if data, err := os.ReadFile(p); err == nil {
-			for _, line := range strings.Split(string(data), "\n") {
-				trimmed := strings.TrimSpace(line)
-				if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-					continue
-				}
-				parts := strings.SplitN(trimmed, "=", 2)
-				if len(parts) == 2 {
-					envMap[strings.TrimSpace(parts[0])] = strings.Trim(strings.TrimSpace(parts[1]), `"' `)
-				}
-			}
+func loadEnvFile(path string) map[string]string {
+	result := make(map[string]string)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return result
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		parts := strings.SplitN(trimmed, "=", 2)
+		if len(parts) == 2 {
+			result[strings.TrimSpace(parts[0])] = strings.Trim(strings.TrimSpace(parts[1]), `"' `)
 		}
 	}
-	loadEnvMap(".env.example")
-	loadEnvMap(".env")
+	return result
+}
 
-	getVar := func(keys ...string) string {
-		for _, k := range keys {
-			if v, ok := envMap[k]; ok && v != "" {
-				return v
-			}
-		}
-		return ""
-	}
+type verifyConfig struct {
+	Service        string
+	Only           string
+	DBHost         string
+	DBPort         string
+	DBUser         string
+	DBPass         string
+	DBName         string
+	DBContainer    string
+	RedisHost      string
+	RedisPort      string
+	RedisPass      string
+	RedisContainer string
+	KafkaHost      string
+	KafkaPort      string
+	OtelHTTPPort   string
+	OtelGRPCPort   string
+	ClickHousePort string
+}
 
+func verifyNativeCredentials(cfg verifyConfig) error {
 	serviceComponents := map[string][]string{
-		"user":          {"db", "kafka", "otel"},
-		"auth":          {"db"},
-		"audit":         {"db", "kafka", "analytics", "otel"},
-		"notifications": {"db", "kafka", "otel"},
-		"payment":       {"db", "kafka"},
-		"storage":       {"db", "otel"},
+		"user":          {"db", "redis", "kafka", "otel"},
+		"auth":          {"db", "redis"},
+		"audit":         {"db", "redis", "kafka", "analytics", "otel"},
+		"notifications": {"db", "redis", "kafka", "otel"},
+		"payment":       {"db", "redis", "kafka"},
+		"storage":       {"db", "redis", "otel"},
 	}
 
-	components, ok := serviceComponents[service]
+	components, ok := serviceComponents[cfg.Service]
 	if !ok {
-		components = []string{"db"}
+		components = []string{"db", "redis"}
 	}
 
-	has := func(c string) bool {
+	want := func(c string) bool {
+		if cfg.Only != "all" && cfg.Only != "" && cfg.Only != c {
+			return false
+		}
 		for _, x := range components {
 			if x == c {
 				return true
@@ -856,45 +928,32 @@ func verifyNativeCredentials(service string, workspaceRoot string) error {
 	}
 
 	fmt.Printf("\n\033[94m====================================================\033[0m\n")
-	fmt.Printf("\033[1m CREDENTIAL VERIFICATION: %s SERVICE\033[0m\n", strings.ToUpper(service))
+	fmt.Printf("\033[1m CREDENTIAL VERIFICATION: %s SERVICE\033[0m\n", strings.ToUpper(cfg.Service))
+	if cfg.Only != "all" && cfg.Only != "" {
+		fmt.Printf("\033[93m Filter: --only %s\033[0m\n", cfg.Only)
+	}
 	fmt.Printf("\033[94m====================================================\033[0m\n\n")
 
 	passed, total := 0, 0
 
-	if has("db") {
+	if want("db") {
 		total++
-		dbUser := getVar(prefix+"_DB_USER", "ALLOYDB_USER", "POSTGRES_USER")
-		if dbUser == "" {
-			dbUser = "admin"
-		}
-		dbPass := getVar(prefix+"_DB_PASSWORD", "ALLOYDB_PASSWORD", "POSTGRES_PASSWORD")
-		if dbPass == "" {
-			dbPass = "llmobs_s3cret_2026"
-		}
-		dbName := getVar(prefix+"_DB_NAME", "ALLOYDB_DB", "POSTGRES_DB")
-		if dbName == "" {
-			dbName = "llm_observability"
-		}
-		dbPort := getVar(prefix+"_DB_PORT", "PORT_ALLOYDB")
-		if dbPort == "" {
-			dbPort = "31420"
-		}
-
 		fmt.Printf("\033[1m1. Database (PostgreSQL / AlloyDB):\033[0m\n")
-		fmt.Printf("   Target: %s@localhost:%s/%s\n", dbUser, dbPort, dbName)
+		fmt.Printf("   Target: %s@%s:%s/%s  (container: %s)\n",
+			cfg.DBUser, cfg.DBHost, cfg.DBPort, cfg.DBName, cfg.DBContainer)
 
-		conn, tcpErr := net.DialTimeout("tcp", "localhost:"+dbPort, 3*time.Second)
+		conn, tcpErr := net.DialTimeout("tcp", cfg.DBHost+":"+cfg.DBPort, 3*time.Second)
 		if tcpErr != nil {
-			fmt.Printf("  \033[91m[FAIL]\033[0m AlloyDB (PostgreSQL) -> Port %s unreachable: %v\n", dbPort, tcpErr)
+			fmt.Printf("  \033[91m[FAIL]\033[0m AlloyDB (PostgreSQL) -> %s:%s unreachable: %v\n", cfg.DBHost, cfg.DBPort, tcpErr)
 		} else {
 			conn.Close()
 			out, execErr := exec.Command(
-				"docker", "exec", "-e", "PGPASSWORD="+dbPass,
-				"llmobs-alloydb-db",
-				"psql", "-U", dbUser, "-d", dbName, "-c", "SELECT 'AUTH_OK' AS status;",
+				"docker", "exec", "-e", "PGPASSWORD="+cfg.DBPass,
+				cfg.DBContainer,
+				"psql", "-U", cfg.DBUser, "-d", cfg.DBName, "-c", "SELECT 'AUTH_OK' AS status;",
 			).CombinedOutput()
 			if execErr == nil && strings.Contains(string(out), "AUTH_OK") {
-				fmt.Printf("  \033[92m[PASS]\033[0m AlloyDB (PostgreSQL) -> Authenticated & query verified (User: '%s', DB: '%s')\n", dbUser, dbName)
+				fmt.Printf("  \033[92m[PASS]\033[0m AlloyDB (PostgreSQL) -> Authenticated & query verified (User: '%s', DB: '%s')\n", cfg.DBUser, cfg.DBName)
 				passed++
 			} else {
 				fmt.Printf("  \033[91m[FAIL]\033[0m AlloyDB (PostgreSQL) -> Query failed: %s\n", strings.TrimSpace(string(out)))
@@ -903,30 +962,21 @@ func verifyNativeCredentials(service string, workspaceRoot string) error {
 		fmt.Println()
 	}
 
-	if has("db") {
+	if want("redis") {
 		total++
-		redisPass := getVar(prefix+"_REDIS_PASSWORD", "REDIS_PASSWORD")
-		if redisPass == "" {
-			redisPass = "llmobs_redis_s3cret_2024"
-		}
-		redisPort := getVar(prefix+"_REDIS_PORT", "PORT_REDIS")
-		if redisPort == "" {
-			redisPort = "31413"
-		}
-
 		fmt.Printf("\033[1m2. Redis Ledger:\033[0m\n")
-		fmt.Printf("   Target: localhost:%s (auth: ***)\n", redisPort)
+		fmt.Printf("   Target: %s:%s  (container: %s, auth: ***)\n", cfg.RedisHost, cfg.RedisPort, cfg.RedisContainer)
 
-		redisCmd := exec.Command("docker", "exec", "llmobs-redis-ledger", "redis-cli", "-a", redisPass, "ping")
+		redisCmd := exec.Command("docker", "exec", cfg.RedisContainer, "redis-cli", "-a", cfg.RedisPass, "ping")
 		redisOut, rErr := redisCmd.CombinedOutput()
 		if rErr == nil && strings.Contains(string(redisOut), "PONG") {
 			fmt.Printf("  \033[92m[PASS]\033[0m Redis Ledger -> Authentication successful (PONG received)\n")
 			passed++
 		} else {
-			rCmd2 := exec.Command("docker", "exec", "llmobs-redis-ledger", "redis-cli", "ping")
+			rCmd2 := exec.Command("docker", "exec", cfg.RedisContainer, "redis-cli", "ping")
 			rOut2, rErr2 := rCmd2.CombinedOutput()
 			if rErr2 == nil && strings.Contains(string(rOut2), "PONG") {
-				fmt.Printf("  \033[92m[PASS]\033[0m Redis Ledger -> Connected without password\n")
+				fmt.Printf("  \033[92m[PASS]\033[0m Redis Ledger -> Connected (no password required)\n")
 				passed++
 			} else {
 				fmt.Printf("  \033[91m[FAIL]\033[0m Redis Ledger -> Authentication failed: %s\n", strings.TrimSpace(string(redisOut)))
@@ -935,20 +985,15 @@ func verifyNativeCredentials(service string, workspaceRoot string) error {
 		fmt.Println()
 	}
 
-	if has("kafka") {
+	if want("kafka") {
 		total++
-		kafkaPort := getVar(prefix+"_KAFKA_PORT", "PORT_KAFKA")
-		if kafkaPort == "" {
-			kafkaPort = "31414"
-		}
-
 		fmt.Printf("\033[1m3. Apache Kafka Event Broker:\033[0m\n")
-		fmt.Printf("   Target: localhost:%s\n", kafkaPort)
+		fmt.Printf("   Target: %s:%s\n", cfg.KafkaHost, cfg.KafkaPort)
 
-		conn, kErr := net.DialTimeout("tcp", "localhost:"+kafkaPort, 3*time.Second)
+		conn, kErr := net.DialTimeout("tcp", cfg.KafkaHost+":"+cfg.KafkaPort, 3*time.Second)
 		if kErr == nil {
 			conn.Close()
-			fmt.Printf("  \033[92m[PASS]\033[0m Kafka Broker -> TCP connection verified (localhost:%s)\n", kafkaPort)
+			fmt.Printf("  \033[92m[PASS]\033[0m Kafka Broker -> TCP connection verified (%s:%s)\n", cfg.KafkaHost, cfg.KafkaPort)
 			passed++
 		} else {
 			fmt.Printf("  \033[91m[FAIL]\033[0m Kafka Broker -> Connection failed: %v\n", kErr)
@@ -956,58 +1001,44 @@ func verifyNativeCredentials(service string, workspaceRoot string) error {
 		fmt.Println()
 	}
 
-	if has("analytics") {
+	if want("analytics") {
 		total++
-		chPort := getVar(prefix+"_CLICKHOUSE_PORT", "PORT_CLICKHOUSE")
-		if chPort == "" {
-			chPort = "31415"
-		}
-
 		fmt.Printf("\033[1m4. ClickHouse Analytics:\033[0m\n")
-		fmt.Printf("   Target: localhost:%s\n", chPort)
+		fmt.Printf("   Target: localhost:%s\n", cfg.ClickHousePort)
 
-		conn, chErr := net.DialTimeout("tcp", "localhost:"+chPort, 3*time.Second)
+		conn, chErr := net.DialTimeout("tcp", "localhost:"+cfg.ClickHousePort, 3*time.Second)
 		if chErr == nil {
 			conn.Close()
-			fmt.Printf("  \033[92m[PASS]\033[0m ClickHouse -> TCP connection verified (localhost:%s)\n", chPort)
+			fmt.Printf("  \033[92m[PASS]\033[0m ClickHouse -> HTTP port %s reachable\n", cfg.ClickHousePort)
 			passed++
 		} else {
-			fmt.Printf("  \033[91m[FAIL]\033[0m ClickHouse -> Connection failed: %v\n", chErr)
+			fmt.Printf("  \033[91m[FAIL]\033[0m ClickHouse -> Port %s unreachable: %v\n", cfg.ClickHousePort, chErr)
 		}
 		fmt.Println()
 	}
 
-	if has("otel") {
+	if want("otel") {
 		total += 2
-		otelHTTP := getVar(prefix+"_OTEL_HTTP_PORT", "PORT_OTEL_HTTP")
-		if otelHTTP == "" {
-			otelHTTP = "31417"
-		}
-		otelGRPC := getVar(prefix+"_OTEL_GRPC_PORT", "PORT_OTEL_GRPC")
-		if otelGRPC == "" {
-			otelGRPC = "31418"
-		}
-
 		fmt.Printf("\033[1m5. OpenTelemetry Collector:\033[0m\n")
-		fmt.Printf("   HTTP Target: http://localhost:%s/v1/traces\n", otelHTTP)
-		fmt.Printf("   gRPC Target: localhost:%s\n", otelGRPC)
+		fmt.Printf("   HTTP: http://localhost:%s/v1/traces\n", cfg.OtelHTTPPort)
+		fmt.Printf("   gRPC: localhost:%s\n", cfg.OtelGRPCPort)
 
-		otelConn, oErr := net.DialTimeout("tcp", "localhost:"+otelHTTP, 3*time.Second)
+		otelConn, oErr := net.DialTimeout("tcp", "localhost:"+cfg.OtelHTTPPort, 3*time.Second)
 		if oErr == nil {
 			otelConn.Close()
-			fmt.Printf("  \033[92m[PASS]\033[0m OTel Collector HTTP -> Port %s reachable\n", otelHTTP)
+			fmt.Printf("  \033[92m[PASS]\033[0m OTel Collector HTTP -> Port %s reachable\n", cfg.OtelHTTPPort)
 			passed++
 		} else {
-			fmt.Printf("  \033[91m[FAIL]\033[0m OTel Collector HTTP -> Port %s unreachable: %v\n", otelHTTP, oErr)
+			fmt.Printf("  \033[91m[FAIL]\033[0m OTel Collector HTTP -> Port %s unreachable: %v\n", cfg.OtelHTTPPort, oErr)
 		}
 
-		grpcConn, gErr := net.DialTimeout("tcp", "localhost:"+otelGRPC, 3*time.Second)
+		grpcConn, gErr := net.DialTimeout("tcp", "localhost:"+cfg.OtelGRPCPort, 3*time.Second)
 		if gErr == nil {
 			grpcConn.Close()
-			fmt.Printf("  \033[92m[PASS]\033[0m OTel Collector gRPC -> Port %s reachable\n", otelGRPC)
+			fmt.Printf("  \033[92m[PASS]\033[0m OTel Collector gRPC -> Port %s reachable\n", cfg.OtelGRPCPort)
 			passed++
 		} else {
-			fmt.Printf("  \033[91m[FAIL]\033[0m OTel Collector gRPC -> Port %s unreachable: %v\n", otelGRPC, gErr)
+			fmt.Printf("  \033[91m[FAIL]\033[0m OTel Collector gRPC -> Port %s unreachable: %v\n", cfg.OtelGRPCPort, gErr)
 		}
 		fmt.Println()
 	}
@@ -1022,4 +1053,5 @@ func verifyNativeCredentials(service string, workspaceRoot string) error {
 
 	return nil
 }
+
 
