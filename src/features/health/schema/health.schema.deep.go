@@ -33,11 +33,12 @@ type SingleProbeResult struct {
 }
 
 type DeepProbeConfig struct {
-	Service  string
-	Host     string
-	Port     int
-	Timeout  time.Duration
+	Service   string
+	Host      string
+	Port      int
+	Timeout   time.Duration
 	Container string
+	Profiles  []string
 
 	Username string
 	Password string
@@ -65,15 +66,39 @@ func DefaultDeepProbeConfigs(primaryHost string) []DeepProbeConfig {
 		primaryHost = "localhost"
 	}
 	return []DeepProbeConfig{
-		{Service: "alloydb", Host: primaryHost, Port: 31420, Timeout: 5 * time.Second, Container: "alloydb", Username: "admin", Password: "", Database: "llm_observability"},
-		{Service: "redis", Host: primaryHost, Port: 31413, Timeout: 5 * time.Second, Container: "redis-ledger", Password: ""},
-		{Service: "kafka", Host: primaryHost, Port: 31414, Timeout: 5 * time.Second, KafkaTopic: "llmobs-health-probe"},
-		{Service: "clickhouse", Host: primaryHost, Port: 31421, Timeout: 5 * time.Second, ClickHouseDB: "llm_observability"},
-		{Service: "grafana", Host: "localhost", Port: 31415, Timeout: 5 * time.Second, GrafanaURL: "http://localhost:31415", GrafanaUser: "admin", GrafanaPass: "admin"},
-		{Service: "tempo", Host: primaryHost, Port: 31416, Timeout: 5 * time.Second},
-		{Service: "temporal", Host: primaryHost, Port: 31424, Timeout: 5 * time.Second, TemporalNS: "default"},
-		{Service: "otel-collector", Host: "localhost", Port: 31417, Timeout: 5 * time.Second, OtelGRPCPort: 31418},
-		{Service: "traefik", Host: "localhost", Port: 31410, Timeout: 5 * time.Second},
-		{Service: "service-registry", Host: "localhost", Port: 31426, Timeout: 5 * time.Second},
+		{Service: "alloydb", Host: primaryHost, Port: 31420, Timeout: 5 * time.Second, Container: "alloydb", Username: "admin", Password: "", Database: "llm_observability", Profiles: []string{"db", "stateful", "full"}},
+		{Service: "redis", Host: primaryHost, Port: 31413, Timeout: 5 * time.Second, Container: "redis-ledger", Password: "", Profiles: []string{"db", "stateful", "full"}},
+		{Service: "kafka", Host: primaryHost, Port: 31414, Timeout: 5 * time.Second, KafkaTopic: "llmobs-health-probe", Profiles: []string{"streaming", "stateful", "full"}},
+		{Service: "clickhouse", Host: primaryHost, Port: 31421, Timeout: 5 * time.Second, ClickHouseDB: "llm_observability", Profiles: []string{"analytics", "stateful", "full"}},
+		{Service: "grafana", Host: "localhost", Port: 31415, Timeout: 5 * time.Second, GrafanaURL: "http://localhost:31415", GrafanaUser: "admin", GrafanaPass: "admin", Profiles: []string{"tracing", "stateless", "full"}},
+		{Service: "tempo", Host: primaryHost, Port: 31416, Timeout: 5 * time.Second, Profiles: []string{"tracing", "stateless", "full"}},
+		{Service: "temporal", Host: primaryHost, Port: 31424, Timeout: 5 * time.Second, TemporalNS: "default", Profiles: []string{"workflows", "stateless", "full"}},
+		{Service: "otel-collector", Host: "localhost", Port: 31417, Timeout: 5 * time.Second, OtelGRPCPort: 31418, Profiles: []string{"tracing", "stateless", "full"}},
+		{Service: "traefik", Host: "localhost", Port: 31410, Timeout: 5 * time.Second, Profiles: []string{"network", "stateless", "full"}},
+		{Service: "service-registry", Host: "localhost", Port: 31426, Timeout: 5 * time.Second, Profiles: []string{"network", "stateless", "full"}},
 	}
+}
+
+// DeepProbeConfigsForProfiles returns only the probe configs whose profile tags
+// intersect the given set of active Docker Compose profiles.
+// An empty profiles slice returns all configs.
+func DeepProbeConfigsForProfiles(primaryHost string, activeProfiles []string) []DeepProbeConfig {
+	all := DefaultDeepProbeConfigs(primaryHost)
+	if len(activeProfiles) == 0 {
+		return all
+	}
+	activeSet := make(map[string]struct{}, len(activeProfiles))
+	for _, p := range activeProfiles {
+		activeSet[p] = struct{}{}
+	}
+	var out []DeepProbeConfig
+	for _, c := range all {
+		for _, p := range c.Profiles {
+			if _, ok := activeSet[p]; ok {
+				out = append(out, c)
+				break
+			}
+		}
+	}
+	return out
 }

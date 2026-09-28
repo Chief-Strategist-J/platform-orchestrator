@@ -56,17 +56,13 @@ var deepProbeRegistry = map[string]probes.ProbeFunc{
 	"service-registry": probes.ProbeServiceRegistry,
 }
 
-func (s *HealthService) RunDeepHealthChecks(ctx context.Context, overrides []schema.DeepProbeConfig) schema.DeepHealthReport {
+func (s *HealthService) RunDeepHealthChecks(ctx context.Context, targetConfigs []schema.DeepProbeConfig) schema.DeepHealthReport {
 	_, endSpan := s.tracer.StartSpan(ctx, "llmobs.health.deep_check_all")
 	defer endSpan()
 
-	defaults := schema.DefaultDeepProbeConfigs("")
-	configMap := make(map[string]schema.DeepProbeConfig, len(defaults))
-	for _, d := range defaults {
-		configMap[d.Service] = d
-	}
-	for _, o := range overrides {
-		configMap[o.Service] = o
+	configs := targetConfigs
+	if len(configs) == 0 {
+		configs = schema.DefaultDeepProbeConfigs("")
 	}
 
 	var wg sync.WaitGroup
@@ -74,8 +70,8 @@ func (s *HealthService) RunDeepHealthChecks(ctx context.Context, overrides []sch
 	var results []schema.SingleProbeResult
 	overallHealthy := true
 
-	for svc, probeFn := range deepProbeRegistry {
-		cfg, exists := configMap[svc]
+	for _, cfg := range configs {
+		probeFn, exists := deepProbeRegistry[cfg.Service]
 		if !exists {
 			continue
 		}

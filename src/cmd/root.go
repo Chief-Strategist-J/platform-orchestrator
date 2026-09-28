@@ -483,6 +483,7 @@ Examples:
 			}
 
 			serviceFilter := parseCsv("services")
+			profilesFilter := parseCsv("profiles")
 			timeoutMs, _ := cmd.Flags().GetInt("timeout-ms")
 			username, _ := cmd.Flags().GetString("username")
 			password, _ := cmd.Flags().GetString("password")
@@ -492,7 +493,13 @@ Examples:
 			grafanaPass, _ := cmd.Flags().GetString("grafana-pass")
 			temporalNS, _ := cmd.Flags().GetString("temporal-ns")
 
-			defaults := healthSchema.DefaultDeepProbeConfigs(host)
+			var defaults []healthSchema.DeepProbeConfig
+			if len(profilesFilter) > 0 {
+				defaults = healthSchema.DeepProbeConfigsForProfiles(host, profilesFilter)
+			} else {
+				defaults = healthSchema.DefaultDeepProbeConfigs(host)
+			}
+
 			filterSet := make(map[string]struct{}, len(serviceFilter))
 			for _, s := range serviceFilter {
 				filterSet[s] = struct{}{}
@@ -535,6 +542,9 @@ Examples:
 			fmt.Println("========================================================================================================================================")
 			fmt.Printf(" Platform DEEP Health Verification (Checked: %d, Healthy: %d, ReportedAt: %s)\n",
 				report.CheckedCount, report.HealthyCount, report.ReportedAt)
+			if len(profilesFilter) > 0 {
+				fmt.Printf(" Profiles : %s\n", strings.Join(profilesFilter, ", "))
+			}
 			if len(serviceFilter) > 0 {
 				fmt.Printf(" Services : %s\n", strings.Join(serviceFilter, ", "))
 			}
@@ -557,6 +567,7 @@ Examples:
 			return nil
 		},
 	}
+	deepHealthCmd.Flags().String("profiles", "", "Comma-separated Docker Compose profiles to scope checks to (e.g. db,streaming,tracing)")
 	deepHealthCmd.Flags().String("services", "", "Comma-separated service names to probe (e.g. kafka,redis,alloydb)")
 	deepHealthCmd.Flags().Int("timeout-ms", 5000, "Probe timeout in milliseconds")
 	deepHealthCmd.Flags().String("username", "", "Username override for database probes")

@@ -26,7 +26,7 @@ ALGORITHM BLUEPRINT:
    - Fake servers close automatically via t.Cleanup.
    - All timeouts in tests are 2s to prevent CI hangs.
 */
-package health_unit
+package unit
 
 import (
 	"encoding/binary"
