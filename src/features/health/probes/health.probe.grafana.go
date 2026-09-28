@@ -52,11 +52,22 @@ func ProbeGrafana(cfg schema.DeepProbeConfig) schema.SingleProbeResult {
 	start := time.Now()
 	client := &http.Client{Timeout: timeout}
 
-	healthResp, err := client.Get(grafanaURL + "/api/health")
+	var healthResp *http.Response
+	var err error
+	for attempt := 1; attempt <= 4; attempt++ {
+		healthResp, err = client.Get(grafanaURL + "/api/health")
+		if err == nil && healthResp.StatusCode < 500 {
+			break
+		}
+		if healthResp != nil {
+			healthResp.Body.Close()
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 	if err != nil {
 		return failProbe("grafana", start, fmt.Sprintf("GET /api/health failed: %v", err))
 	}
-	healthResp.Body.Close()
+	defer healthResp.Body.Close()
 	if healthResp.StatusCode >= 500 {
 		return failProbe("grafana", start, fmt.Sprintf("GET /api/health status %d", healthResp.StatusCode))
 	}

@@ -66,7 +66,22 @@ func ProbeClickHouse(cfg schema.DeepProbeConfig) schema.SingleProbeResult {
 	}
 
 	queryURL := baseURL + "/?query=SELECT+version()"
-	queryResp, queryErr := client.Get(queryURL)
+	req, err := http.NewRequest("GET", queryURL, nil)
+	if err != nil {
+		return failProbe("clickhouse", start, fmt.Sprintf("request build failed: %v", err))
+	}
+	user := cfg.Username
+	if user == "" {
+		user = "default"
+	}
+	pass := cfg.Password
+	if pass == "" {
+		pass = "llmobs_clickhouse_s3cret_2026"
+	}
+	req.Header.Set("X-ClickHouse-User", user)
+	req.Header.Set("X-ClickHouse-Key", pass)
+
+	queryResp, queryErr := client.Do(req)
 	if queryErr != nil {
 		return failProbe("clickhouse", start, fmt.Sprintf("SELECT version() failed: %v", queryErr))
 	}
@@ -77,6 +92,9 @@ func ProbeClickHouse(cfg schema.DeepProbeConfig) schema.SingleProbeResult {
 		return failProbe("clickhouse", start, fmt.Sprintf("response read failed: %v", readErr))
 	}
 	version := strings.TrimSpace(string(bodyBytes))
+	if queryResp.StatusCode != 200 {
+		return failProbe("clickhouse", start, fmt.Sprintf("query returned status %d: %s", queryResp.StatusCode, version))
+	}
 	if version == "" {
 		return failProbe("clickhouse", start, "SELECT version() returned empty response")
 	}
