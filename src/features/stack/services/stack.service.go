@@ -106,6 +106,7 @@ func (s *StackService) StartStack(ctx context.Context, cmd schema.StackUpCommand
 	_, endSpan := s.tracer.StartSpan(ctx, "llmobs.stack.up")
 	defer endSpan()
 
+	fmt.Println("▶ [Step 1/5] Initializing environment configuration (.env)...")
 	if err := s.ensureEnvFile(); err != nil {
 		return schema.StackActionOutcome{
 			Status:  schema.StatusError,
@@ -115,6 +116,7 @@ func (s *StackService) StartStack(ctx context.Context, cmd schema.StackUpCommand
 
 	profiles := rules.ResolveProfiles(cmd.Profiles)
 	composeFiles := rules.SelectComposeFiles(s.baseDir, profiles)
+	fmt.Printf("▶ [Step 2/5] Resolved active profiles: %v | Compose files: %v\n", profiles, composeFiles)
 
 	resolver := paths.NewPathResolver(s.baseDir)
 	netName, netSubnet, netGateway := resolver.ResolveNetworkConfig(
@@ -123,6 +125,7 @@ func (s *StackService) StartStack(ctx context.Context, cmd schema.StackUpCommand
 		cmd.NetworkGateway,
 	)
 
+	fmt.Printf("▶ [Step 3/5] Provisioning Docker isolated network: %s (Subnet: %s, Gateway: %s)...\n", netName, netSubnet, netGateway)
 	if err := s.networkPort.EnsureNetwork(ctx, netName, netSubnet, netGateway); err != nil {
 		return schema.StackActionOutcome{
 			Status:  schema.StatusError,
@@ -140,12 +143,15 @@ func (s *StackService) StartStack(ctx context.Context, cmd schema.StackUpCommand
 
 	if !isStateless {
 		dataDir := resolver.DataDir()
+		fmt.Printf("▶ [Step 4/5] Preparing persistent storage directories under %s...\n", dataDir)
 		if err := s.ensureStorageDirectories(dataDir); err != nil {
 			return schema.StackActionOutcome{
 				Status:  schema.StatusError,
 				Message: fmt.Sprintf("storage directory initialization failed: %v", err),
 			}, fmt.Errorf("storage directory initialization failed: %w", err)
 		}
+	} else {
+		fmt.Println("▶ [Step 4/5] Skipping persistent directories (running in stateless profile)...")
 	}
 
 	opts := ports.ComposeOptions{
@@ -155,6 +161,7 @@ func (s *StackService) StartStack(ctx context.Context, cmd schema.StackUpCommand
 		Detach:       cmd.Detach,
 	}
 
+	fmt.Printf("▶ [Step 5/5] Launching container services via Docker Compose (Profiles: %v)...\n", profiles)
 	if err := s.containerPort.ComposeUp(ctx, opts); err != nil {
 		return schema.StackActionOutcome{
 			Status:  schema.StatusError,
@@ -162,6 +169,7 @@ func (s *StackService) StartStack(ctx context.Context, cmd schema.StackUpCommand
 		}, fmt.Errorf("compose up failed: %w", err)
 	}
 
+	fmt.Println("▶ [Post-Boot] Running automated schema & health self-healing...")
 	s.healTemporalIfCorrupted(ctx, profiles)
 
 	s.PrintEndpoints(profiles)
@@ -177,6 +185,7 @@ func (s *StackService) StopStack(ctx context.Context) (schema.StackActionOutcome
 	_, endSpan := s.tracer.StartSpan(ctx, "llmobs.stack.down")
 	defer endSpan()
 
+	fmt.Println("▶ [Step 1/2] Discovering compose configurations across all profiles...")
 	resolver := paths.NewPathResolver(s.baseDir)
 	composeFiles := []string{resolver.ComposeFile(schema.DefaultComposeFile)}
 	opts := ports.ComposeOptions{
@@ -184,6 +193,7 @@ func (s *StackService) StopStack(ctx context.Context) (schema.StackActionOutcome
 		Profiles:     []string{schema.ProfileAll},
 	}
 
+	fmt.Println("▶ [Step 2/2] Stopping and removing infrastructure containers...")
 	if err := s.containerPort.ComposeDown(ctx, opts); err != nil {
 		return schema.StackActionOutcome{
 			Status:  schema.StatusError,
@@ -204,12 +214,14 @@ func (s *StackService) RestartStack(ctx context.Context, profiles []string) (sch
 
 	resolved := rules.ResolveProfiles(profiles)
 	composeFiles := rules.SelectComposeFiles(s.baseDir, resolved)
+	fmt.Printf("▶ [Step 1/3] Resolving profiles for restart: %v\n", resolved)
 
 	opts := ports.ComposeOptions{
 		ComposeFiles: composeFiles,
 		Profiles:     resolved,
 	}
 
+	fmt.Printf("▶ [Step 2/3] Restarting containers via Docker Compose (Profiles: %v)...\n", resolved)
 	if err := s.containerPort.ComposeRestart(ctx, opts); err != nil {
 		return schema.StackActionOutcome{
 			Status:  schema.StatusError,
@@ -217,6 +229,7 @@ func (s *StackService) RestartStack(ctx context.Context, profiles []string) (sch
 		}, fmt.Errorf("compose restart failed: %w", err)
 	}
 
+	fmt.Println("▶ [Step 3/3] Running post-restart schema verification...")
 	s.healTemporalIfCorrupted(ctx, resolved)
 
 	return schema.StackActionOutcome{
