@@ -15,7 +15,7 @@ services:
   llmobs-traefik:
     image: traefik:v3.7
     container_name: ${CONTAINER_PREFIX:-}llmobs-traefik-gateway
-    profiles: ["network", "stateless", "edge", "full"]
+    profiles: ["traefik", "network", "stateless", "edge", "full"]
     restart: unless-stopped
     logging: *default-logging
     deploy:
@@ -71,7 +71,7 @@ services:
   llmobs-redis:
     image: redis:7-alpine
     container_name: ${CONTAINER_PREFIX:-}llmobs-redis-ledger
-    profiles: ["db", "stateful", "data", "full"]
+    profiles: ["redis", "db", "stateful", "data", "full"]
     restart: unless-stopped
     logging: *default-logging
     command: >
@@ -97,7 +97,7 @@ services:
   llmobs-kafka:
     image: apache/kafka:latest
     container_name: ${CONTAINER_PREFIX:-}llmobs-kafka-broker
-    profiles: ["streaming", "stateful", "data", "full"]
+    profiles: ["kafka", "streaming", "stateful", "data", "full"]
     restart: unless-stopped
     stop_grace_period: 60s
     logging: *default-logging
@@ -143,7 +143,7 @@ services:
   llmobs-clickhouse:
     image: clickhouse/clickhouse-server:latest
     container_name: ${CONTAINER_PREFIX:-}llmobs-clickhouse-analytics
-    profiles: ["analytics", "stateful", "data", "full"]
+    profiles: ["clickhouse", "analytics", "stateful", "data", "full"]
     restart: unless-stopped
     stop_grace_period: 60s
     logging: *default-logging
@@ -183,7 +183,7 @@ services:
   llmobs-tempo:
     image: grafana/tempo:latest
     container_name: ${CONTAINER_PREFIX:-}llmobs-tempo-tracing
-    profiles: ["tracing", "stateful", "data", "full"]
+    profiles: ["tempo", "tracing", "stateful", "data", "full"]
     restart: unless-stopped
     logging: *default-logging
     deploy:
@@ -215,7 +215,7 @@ services:
   llmobs-otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
     container_name: ${CONTAINER_PREFIX:-}llmobs-otel-collector
-    profiles: ["tracing", "stateless", "compute", "full"]
+    profiles: ["otel", "otel-collector", "tracing", "stateless", "compute", "full"]
     restart: unless-stopped
     logging: *default-logging
     deploy:
@@ -252,7 +252,7 @@ services:
   llmobs-grafana:
     image: grafana/grafana:latest
     container_name: ${CONTAINER_PREFIX:-}llmobs-grafana-portal
-    profiles: ["tracing", "stateless", "portal", "full"]
+    profiles: ["grafana", "tracing", "stateless", "portal", "full"]
     restart: unless-stopped
     logging: *default-logging
     deploy:
@@ -302,7 +302,7 @@ services:
   llmobs-alloydb:
     image: google/alloydbomni:15
     container_name: ${CONTAINER_PREFIX:-}llmobs-alloydb-db
-    profiles: ["db", "workflows", "stateful", "data", "full"]
+    profiles: ["alloydb", "db", "workflows", "stateful", "data", "full"]
     restart: unless-stopped
     stop_grace_period: 60s
     logging: *audit-logging
@@ -357,7 +357,7 @@ services:
   llmobs-temporal:
     image: temporalio/auto-setup:1.24.2
     container_name: ${CONTAINER_PREFIX:-}llmobs-temporal-engine
-    profiles: ["workflows", "stateless", "compute", "full"]
+    profiles: ["temporal", "workflows", "stateless", "compute", "full"]
     restart: unless-stopped
     logging: *default-logging
     deploy:
@@ -407,7 +407,7 @@ services:
   llmobs-service-registry:
     image: chiefj/llmobs-service-registry:latest
     container_name: ${CONTAINER_PREFIX:-}llmobs-service-registry
-    profiles: ["network", "stateless", "edge", "full"]
+    profiles: ["service-registry", "network", "stateless", "edge", "full"]
     restart: always
     logging: *default-logging
     deploy:

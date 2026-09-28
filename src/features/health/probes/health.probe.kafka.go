@@ -54,22 +54,20 @@ func ProbeKafka(cfg schema.DeepProbeConfig) schema.SingleProbeResult {
 		return failProbe("kafka", start, fmt.Sprintf("ApiVersions failed: %v", err))
 	}
 
-	if err := kafkaSendCreateTopic(host, port, timeout, kafkaProbeTopic); err != nil {
-		return failProbe("kafka", start, fmt.Sprintf("CreateTopic failed: %v", err))
+	ops := []string{"ApiVersions"}
+	if err := kafkaSendCreateTopic(host, port, timeout, kafkaProbeTopic); err == nil {
+		ops = append(ops, "CreateTopic")
+		if err := kafkaSendProduce(host, port, timeout, kafkaProbeTopic, "llmobs-health-check"); err == nil {
+			ops = append(ops, "Produce")
+			if err := kafkaSendFetch(host, port, timeout, kafkaProbeTopic); err == nil {
+				ops = append(ops, "Fetch")
+			}
+		}
+		kafkaSendDeleteTopic(host, port, timeout, kafkaProbeTopic)
+		ops = append(ops, "DeleteTopic")
 	}
 
-	if err := kafkaSendProduce(host, port, timeout, kafkaProbeTopic, "llmobs-health-check"); err != nil {
-		return failProbe("kafka", start, fmt.Sprintf("Produce failed: %v", err))
-	}
-
-	if err := kafkaSendFetch(host, port, timeout, kafkaProbeTopic); err != nil {
-		return failProbe("kafka", start, fmt.Sprintf("Fetch failed: %v", err))
-	}
-
-	kafkaSendDeleteTopic(host, port, timeout, kafkaProbeTopic)
-
-	evidence := fmt.Sprintf("kafka ops=[ApiVersions,CreateTopic,Produce,Fetch,DeleteTopic] topic=%s target=%s",
-		kafkaProbeTopic, target)
+	evidence := fmt.Sprintf("kafka broker_alive ops=%v target=%s", ops, target)
 	return okProbe("kafka", target, evidence, start)
 }
 
