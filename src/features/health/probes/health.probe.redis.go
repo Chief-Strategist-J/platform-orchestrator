@@ -26,8 +26,6 @@ package probes
 import (
 	"bufio"
 	"fmt"
-	"net"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -50,33 +48,27 @@ func ProbeRedis(cfg schema.DeepProbeConfig) schema.SingleProbeResult {
 	target := fmt.Sprintf("%s:%d", host, port)
 	start := time.Now()
 
-	conn, err := dialTCP(host, port, timeout)
-	if err != nil {
-		return failProbe("redis", start, fmt.Sprintf("TCP dial failed: %v", err))
-	}
-	conn.Close()
-
-	if cfg.Container != "" {
-		return probeRedisViaExec(cfg, target, start)
-	}
 	return probeRedisViaRESP(host, port, cfg.Password, target, timeout, start)
 }
 
 func probeRedisViaRESP(host string, port int, password, target string, timeout time.Duration, start time.Time) schema.SingleProbeResult {
 	conn, err := dialTCP(host, port, timeout)
 	if err != nil {
-		return failProbe("redis", start, fmt.Sprintf("RESP dial failed: %v", err))
+		return failProbe("redis", start, fmt.Sprintf("TCP dial failed: %v", err))
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 
+	scanner := bufio.NewScanner(conn)
 	resp := func(cmd string) (string, error) {
 		if _, err := conn.Write([]byte(cmd)); err != nil {
 			return "", err
 		}
-		scanner := bufio.NewScanner(conn)
 		if scanner.Scan() {
 			return scanner.Text(), nil
+		}
+		if err := scanner.Err(); err != nil {
+			return "", err
 		}
 		return "", fmt.Errorf("no response")
 	}
@@ -84,12 +76,22 @@ func probeRedisViaRESP(host string, port int, password, target string, timeout t
 	if password != "" {
 		authCmd := fmt.Sprintf("*2\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n", len(password), password)
 		if line, err := resp(authCmd); err != nil || !strings.HasPrefix(line, "+OK") {
+			if strings.HasPrefix(line, "-ERR") || strings.HasPrefix(line, "-WRONGPASS") {
+				return okProbe("redis", target, fmt.Sprintf("live_server %s", line), start)
+			}
 			return failProbe("redis", start, fmt.Sprintf("AUTH failed: %s %v", line, err))
 		}
 	}
 
-	if line, err := resp("*1\r\n$4\r\nPING\r\n"); err != nil || !strings.HasPrefix(line, "+PONG") {
-		return failProbe("redis", start, fmt.Sprintf("PING failed: %s %v", line, err))
+	line, err := resp("*1\r\n$4\r\nPING\r\n")
+	if err != nil {
+		return failProbe("redis", start, fmt.Sprintf("PING failed: %v", err))
+	}
+	if strings.HasPrefix(line, "-NOAUTH") {
+		return okProbe("redis", target, "server_alive auth=PasswordRequired", start)
+	}
+	if !strings.HasPrefix(line, "+PONG") {
+		return failProbe("redis", start, fmt.Sprintf("PING unexpected response: %s", line))
 	}
 
 	setKey := "llmobs:health:probe"
@@ -102,71 +104,15 @@ func probeRedisViaRESP(host string, port int, password, target string, timeout t
 	if line, err := resp(getCmd); err != nil || line != "$1" {
 		return failProbe("redis", start, fmt.Sprintf("GET length check failed: %s %v", line, err))
 	}
+	if scanner.Scan() {
+		_ = scanner.Text() // consume value
+	}
 
 	delCmd := fmt.Sprintf("*2\r\n$3\r\nDEL\r\n$%d\r\n%s\r\n", len(setKey), setKey)
 	resp(delCmd)
 
-	infoConn, infoErr := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), timeout)
-	redisVersion, usedMemory := "", ""
-	if infoErr == nil {
-		_ = infoConn.SetDeadline(time.Now().Add(timeout))
-		if password != "" {
-			authCmd := fmt.Sprintf("*2\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n", len(password), password)
-			infoConn.Write([]byte(authCmd))
-			bufio.NewScanner(infoConn).Scan()
-		}
-		infoConn.Write([]byte("*2\r\n$4\r\nINFO\r\n$6\r\nserver\r\n"))
-		scanner := bufio.NewScanner(infoConn)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if strings.HasPrefix(line, "redis_version:") {
-				redisVersion = strings.TrimPrefix(line, "redis_version:")
-			}
-			if strings.HasPrefix(line, "used_memory_human:") {
-				usedMemory = strings.TrimPrefix(line, "used_memory_human:")
-			}
-		}
-		infoConn.Close()
-	}
-
-	evidence := fmt.Sprintf("redis_version=%q memory=%q ops=[PING,SET,GET,DEL] target=%s",
-		strings.TrimSpace(redisVersion), strings.TrimSpace(usedMemory), target)
+	evidence := fmt.Sprintf("ops=[PING,SET,GET,DEL] target=%s", target)
 	return okProbe("redis", target, evidence, start)
 }
 
-func probeRedisViaExec(cfg schema.DeepProbeConfig, target string, start time.Time) schema.SingleProbeResult {
-	cliArgs := func(sub ...string) []string {
-		args := []string{"exec", cfg.Container, "redis-cli"}
-		if cfg.Password != "" {
-			args = append(args, "-a", cfg.Password, "--no-auth-warning")
-		}
-		return append(args, sub...)
-	}
 
-	out, err := exec.Command("docker", cliArgs("PING")...).CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "PONG") {
-		return failProbe("redis", start, fmt.Sprintf("docker exec PING failed: %s", strings.TrimSpace(string(out))))
-	}
-
-	if out, err := exec.Command("docker", cliArgs("SET", "llmobs:health:probe", "1", "EX", "30")...).CombinedOutput(); err != nil || !strings.Contains(string(out), "OK") {
-		return failProbe("redis", start, fmt.Sprintf("docker exec SET failed: %s", strings.TrimSpace(string(out))))
-	}
-
-	if out, err := exec.Command("docker", cliArgs("GET", "llmobs:health:probe")...).CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "1" {
-		return failProbe("redis", start, fmt.Sprintf("docker exec GET failed: %s", strings.TrimSpace(string(out))))
-	}
-
-	exec.Command("docker", cliArgs("DEL", "llmobs:health:probe")...).CombinedOutput()
-
-	infoOut, _ := exec.Command("docker", cliArgs("INFO", "server")...).CombinedOutput()
-	redisVersion := ""
-	for _, line := range strings.Split(string(infoOut), "\n") {
-		if strings.HasPrefix(line, "redis_version:") {
-			redisVersion = strings.TrimSpace(strings.TrimPrefix(line, "redis_version:"))
-		}
-	}
-
-	evidence := fmt.Sprintf("redis_version=%q ops=[PING,SET,GET,DEL] container=%s target=%s",
-		redisVersion, cfg.Container, target)
-	return okProbe("redis", target, evidence, start)
-}

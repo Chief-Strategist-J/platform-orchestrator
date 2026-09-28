@@ -119,17 +119,22 @@ func readPGStartupResponse(conn interface{ Read([]byte) (int, error) }) (serverV
 		switch typeBuf[0] {
 		case 'R':
 			if len(chunk) >= 4 {
-				switch binary.BigEndian.Uint32(chunk[:4]) {
+				authCode := binary.BigEndian.Uint32(chunk[:4])
+				switch authCode {
 				case 0:
 					authType = "OK(no-auth)"
 				case 3:
 					authType = "CleartextPassword"
+					return
 				case 5:
 					authType = "MD5"
+					return
 				case 10:
 					authType = "SASL"
+					return
 				default:
-					authType = fmt.Sprintf("code=%d", binary.BigEndian.Uint32(chunk[:4]))
+					authType = fmt.Sprintf("code=%d", authCode)
+					return
 				}
 			}
 		case 'S':
