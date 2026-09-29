@@ -10,6 +10,7 @@ package dns
 
 import (
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/dns/services"
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/ports"
 )
 
