@@ -4,9 +4,10 @@ Package services provides isolated, domain-specific services for Grafana lifecyc
 ALGORITHM BLUEPRINT (AlertService):
 1. Alert Rules Lifecycle: List, Get, Upsert, Delete Grafana Unified Alerting rules.
 2. Contact Points Lifecycle: List, Create/Update, Delete, Test notification channels (Slack, Webhook, Email, PagerDuty).
-3. Folder Verification: Automatically ensures prerequisite folder existence before provisioning rules.
-4. OpenTelemetry Tracing: Wraps every public operation in an attributed span.
-5. Invariants:
+3. Declarative Rule Pipelines: Executes rules.AlertRuleRules and rules.ContactPointRules (Rule 3: Rules as Data).
+4. Declarative Upsert Actions: Streamlined creation/update decision trees without nested imperative branches.
+5. OpenTelemetry Tracing: Wraps every public operation in an attributed span.
+6. Invariants:
    - Zero inline comments inside function bodies.
    - Non-200 responses return descriptive error envelopes.
 */
@@ -76,90 +77,73 @@ func (s *AlertService) CreateOrUpdateAlertRule(ctx context.Context, opts types.C
 	ctx, endSpan := s.tracer.StartSpan(ctx, "grafana.alerts.save")
 	defer endSpan()
 
-	rule = rules.NormalizeAlertRulePayload(rule)
-	if err := rules.ValidateAlertRulePayload(rule); err != nil {
+	normalized, err := rules.AlertRuleRules.Execute(rule)
+	if err != nil {
 		return nil, err
 	}
 
 	c := client.NewGrafanaClient(opts, s.resolver)
 	start := time.Now()
 
-	if rule.FolderUID != "" {
-		_ = s.EnsureFolderExists(ctx, opts, rule.FolderUID)
+	if normalized.FolderUID != "" {
+		_ = s.EnsureFolderExists(ctx, opts, normalized.FolderUID)
 	}
 
-	targetPath := endpoints.BuildAlertRuleUIDPath(rule.UID)
+	targetPath := endpoints.BuildAlertRuleUIDPath(normalized.UID)
 	var existingRule schema.AlertRulePayload
 	status, err := c.Do(ctx, http.MethodGet, targetPath, nil, &existingRule)
 
-	var result types.AlertOperationResult
+	var (
+		resUID string
+		action string
+		method string
+		path   string
+	)
 
 	if err == nil && status == http.StatusOK {
-		var updateResp struct {
-			UID     string `json:"uid"`
-			Title   string `json:"title"`
-			Message string `json:"message"`
-		}
-		_, err = c.Do(ctx, http.MethodPut, targetPath, rule, &updateResp)
-		latency := float64(time.Since(start).Microseconds()) / 1000.0
-
-		if err != nil {
-			result = types.AlertOperationResult{
-				UID:       rule.UID,
-				Title:     rule.Title,
-				Message:   fmt.Sprintf("Failed to update alert rule: %v", err),
-				Status:    "failed",
-				Success:   false,
-				LatencyMs: latency,
-			}
-			return &result, err
-		}
-
-		result = types.AlertOperationResult{
-			UID:       rule.UID,
-			Title:     rule.Title,
-			Message:   "Alert rule updated successfully",
-			Status:    "updated",
-			Success:   true,
-			LatencyMs: latency,
-		}
+		action = "updated"
+		method = http.MethodPut
+		path = targetPath
+		resUID = normalized.UID
 	} else {
-		var createResp struct {
-			UID     string `json:"uid"`
-			Title   string `json:"title"`
-			Message string `json:"message"`
-		}
-		_, err = c.Do(ctx, http.MethodPost, endpoints.EndpointAlertRules, rule, &createResp)
-		latency := float64(time.Since(start).Microseconds()) / 1000.0
-
-		if err != nil {
-			result = types.AlertOperationResult{
-				UID:       rule.UID,
-				Title:     rule.Title,
-				Message:   fmt.Sprintf("Failed to create alert rule: %v", err),
-				Status:    "failed",
-				Success:   false,
-				LatencyMs: latency,
-			}
-			return &result, err
-		}
-
-		resUID := createResp.UID
-		if resUID == "" {
-			resUID = rule.UID
-		}
-
-		result = types.AlertOperationResult{
-			UID:       resUID,
-			Title:     rule.Title,
-			Message:   "Alert rule created successfully",
-			Status:    "created",
-			Success:   true,
-			LatencyMs: latency,
-		}
+		action = "created"
+		method = http.MethodPost
+		path = endpoints.EndpointAlertRules
+		resUID = normalized.UID
 	}
 
-	return &result, nil
+	var opResp struct {
+		UID     string `json:"uid"`
+		Title   string `json:"title"`
+		Message string `json:"message"`
+	}
+
+	_, opErr := c.Do(ctx, method, path, normalized, &opResp)
+	latency := float64(time.Since(start).Microseconds()) / 1000.0
+
+	if opErr != nil {
+		return &types.AlertOperationResult{
+			UID:       normalized.UID,
+			Title:     normalized.Title,
+			Message:   fmt.Sprintf("Failed to %s alert rule: %v", action, opErr),
+			Status:    "failed",
+			Success:   false,
+			LatencyMs: latency,
+		}, opErr
+	}
+
+	if opResp.UID != "" {
+		resUID = opResp.UID
+	}
+
+	return &types.AlertOperationResult{
+		UID:       resUID,
+		Title:     normalized.Title,
+		Message:   fmt.Sprintf("Alert rule %s successfully", action),
+		Status:    action,
+		Success:   true,
+		LatencyMs: latency,
+	}, nil
 }
 
 func (s *AlertService) DeleteAlertRule(ctx context.Context, opts types.ClientOptions, uid string) (*types.AlertOperationResult, error) {
@@ -215,8 +199,8 @@ func (s *AlertService) CreateOrUpdateContactPoint(ctx context.Context, opts type
 	ctx, endSpan := s.tracer.StartSpan(ctx, "grafana.contact_points.save")
 	defer endSpan()
 
-	cp = rules.NormalizeContactPointPayload(cp)
-	if err := rules.ValidateContactPointPayload(cp); err != nil {
+	normalized, err := rules.ContactPointRules.Execute(cp)
+	if err != nil {
 		return nil, err
 	}
 
@@ -226,84 +210,64 @@ func (s *AlertService) CreateOrUpdateContactPoint(ctx context.Context, opts type
 	var existingCPs []schema.ContactPointPayload
 	_, _ = c.Do(ctx, http.MethodGet, endpoints.EndpointContactPoints, nil, &existingCPs)
 
-	found := false
+	matchedUID := normalized.UID
 	for _, existing := range existingCPs {
-		if existing.UID == cp.UID || existing.Name == cp.Name {
-			found = true
-			if cp.UID == "" {
-				cp.UID = existing.UID
-			}
+		if existing.UID == normalized.UID || existing.Name == normalized.Name {
+			matchedUID = existing.UID
 			break
 		}
 	}
 
-	var result types.AlertOperationResult
+	var (
+		action string
+		method string
+		path   string
+	)
 
-	if found && cp.UID != "" {
-		targetPath := endpoints.BuildContactPointUIDPath(cp.UID)
-		var updateResp struct {
-			UID     string `json:"uid"`
-			Name    string `json:"name"`
-			Message string `json:"message"`
-		}
-		_, err := c.Do(ctx, http.MethodPut, targetPath, cp, &updateResp)
-		latency := float64(time.Since(start).Microseconds()) / 1000.0
-
-		if err != nil {
-			return &types.AlertOperationResult{
-				UID:       cp.UID,
-				Title:     cp.Name,
-				Message:   fmt.Sprintf("Failed to update contact point: %v", err),
-				Status:    "failed",
-				Success:   false,
-				LatencyMs: latency,
-			}, err
-		}
-
-		result = types.AlertOperationResult{
-			UID:       cp.UID,
-			Title:     cp.Name,
-			Message:   "Contact point updated successfully",
-			Status:    "updated",
-			Success:   true,
-			LatencyMs: latency,
-		}
+	if matchedUID != "" {
+		action = "updated"
+		method = http.MethodPut
+		path = endpoints.BuildContactPointUIDPath(matchedUID)
+		normalized.UID = matchedUID
 	} else {
-		var createResp struct {
-			UID     string `json:"uid"`
-			Name    string `json:"name"`
-			Message string `json:"message"`
-		}
-		_, err := c.Do(ctx, http.MethodPost, endpoints.EndpointContactPoints, cp, &createResp)
-		latency := float64(time.Since(start).Microseconds()) / 1000.0
-
-		if err != nil {
-			return &types.AlertOperationResult{
-				UID:       cp.UID,
-				Title:     cp.Name,
-				Message:   fmt.Sprintf("Failed to create contact point: %v", err),
-				Status:    "failed",
-				Success:   false,
-				LatencyMs: latency,
-			}, err
-		}
-
-		resUID := createResp.UID
-		if resUID == "" {
-			resUID = cp.UID
-		}
-
-		result = types.AlertOperationResult{
-			UID:       resUID,
-			Title:     cp.Name,
-			Message:   "Contact point created successfully",
-			Status:    "created",
-			Success:   true,
-			LatencyMs: latency,
-		}
+		action = "created"
+		method = http.MethodPost
+		path = endpoints.EndpointContactPoints
 	}
 
-	return &result, nil
+	var opResp struct {
+		UID     string `json:"uid"`
+		Name    string `json:"name"`
+		Message string `json:"message"`
+	}
+
+	_, opErr := c.Do(ctx, method, path, normalized, &opResp)
+	latency := float64(time.Since(start).Microseconds()) / 1000.0
+
+	if opErr != nil {
+		return &types.AlertOperationResult{
+			UID:       normalized.UID,
+			Title:     normalized.Name,
+			Message:   fmt.Sprintf("Failed to %s contact point: %v", action, opErr),
+			Status:    "failed",
+			Success:   false,
+			LatencyMs: latency,
+		}, opErr
+	}
+
+	finalUID := opResp.UID
+	if finalUID == "" {
+		finalUID = normalized.UID
+	}
+
+	return &types.AlertOperationResult{
+		UID:       finalUID,
+		Title:     normalized.Name,
+		Message:   fmt.Sprintf("Contact point %s successfully", action),
+		Status:    action,
+		Success:   true,
+		LatencyMs: latency,
+	}, nil
 }
 
 func (s *AlertService) DeleteContactPoint(ctx context.Context, opts types.ClientOptions, uid string) (*types.AlertOperationResult, error) {
@@ -344,7 +308,7 @@ func (s *AlertService) TestContactPoint(ctx context.Context, opts types.ClientOp
 	ctx, endSpan := s.tracer.StartSpan(ctx, "grafana.contact_points.test")
 	defer endSpan()
 
-	cp = rules.NormalizeContactPointPayload(cp)
+	normalized := rules.ContactPointRules.Normalize(cp)
 	c := client.NewGrafanaClient(opts, s.resolver)
 	start := time.Now()
 
@@ -359,9 +323,9 @@ func (s *AlertService) TestContactPoint(ctx context.Context, opts types.ClientOp
 		},
 		"receivers": []map[string]interface{}{
 			{
-				"name":     cp.Name,
-				"type":     cp.Type,
-				"settings": cp.Settings,
+				"name":     normalized.Name,
+				"type":     normalized.Type,
+				"settings": normalized.Settings,
 			},
 		},
 	}
@@ -376,7 +340,7 @@ func (s *AlertService) TestContactPoint(ctx context.Context, opts types.ClientOp
 
 	if err != nil {
 		return &types.AlertOperationResult{
-			Title:     cp.Name,
+			Title:     normalized.Name,
 			Status:    "failed",
 			Message:   fmt.Sprintf("Contact point test failed: %v", err),
 			Success:   false,
@@ -385,7 +349,7 @@ func (s *AlertService) TestContactPoint(ctx context.Context, opts types.ClientOp
 	}
 
 	return &types.AlertOperationResult{
-		Title:     cp.Name,
+		Title:     normalized.Name,
 		Status:    "success",
 		Message:   "Test notification successfully dispatched and accepted",
 		Success:   true,

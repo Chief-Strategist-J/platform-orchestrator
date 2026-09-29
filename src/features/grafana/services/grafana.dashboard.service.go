@@ -4,7 +4,7 @@ Package services provides isolated, domain-specific services for Grafana lifecyc
 ALGORITHM BLUEPRINT (DashboardService):
 1. Dashboard Operations: Search, Get by UID, Save/Update, Import from file/URL, Export to JSON, Delete by UID.
 2. Endpoint Decoupling: Uses centralized typed endpoint constants from the endpoints package.
-3. Import Parser: Handles local file paths as well as HTTP/HTTPS remote URLs (e.g. Grafana.com community downloads).
+3. Declarative Source Loaders: Delegates source loading to DashboardLoaderRegistry (Rule 1: Checking WHAT something is -> Registry).
 4. OpenTelemetry Tracing: Wraps every public operation in an attributed span.
 5. Invariants:
    - Zero inline comments inside function bodies.
@@ -16,12 +16,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/client"
@@ -36,6 +32,7 @@ type DashboardService struct {
 	tracer   ports.TracerPort
 	baseDir  string
 	resolver *paths.PathResolver
+	loaders  *DashboardLoaderRegistry
 }
 
 func NewDashboardService(tracer ports.TracerPort, baseDir string) *DashboardService {
@@ -43,6 +40,7 @@ func NewDashboardService(tracer ports.TracerPort, baseDir string) *DashboardServ
 		tracer:   tracer,
 		baseDir:  baseDir,
 		resolver: paths.NewPathResolver(baseDir),
+		loaders:  NewDashboardLoaderRegistry(),
 	}
 }
 
@@ -113,39 +111,9 @@ func (s *DashboardService) Import(ctx context.Context, opts types.ClientOptions,
 	ctx, endSpan := s.tracer.StartSpan(ctx, "grafana.dashboards.import")
 	defer endSpan()
 
-	var rawJSON []byte
-
-	if strings.HasPrefix(importOpts.SourcePathOrURL, "http://") || strings.HasPrefix(importOpts.SourcePathOrURL, "https://") {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, importOpts.SourcePathOrURL, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed creating download request: %w", err)
-		}
-		dlClient := &http.Client{Timeout: 30 * time.Second}
-		resp, err := dlClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("failed downloading dashboard from %s: %w", importOpts.SourcePathOrURL, err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("download from %s failed with status %d", importOpts.SourcePathOrURL, resp.StatusCode)
-		}
-
-		rawJSON, err = io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, fmt.Errorf("failed reading downloaded dashboard body: %w", err)
-		}
-	} else {
-		filePath := importOpts.SourcePathOrURL
-		if !filepath.IsAbs(filePath) && s.baseDir != "" {
-			filePath = filepath.Join(s.baseDir, filePath)
-		}
-
-		var err error
-		rawJSON, err = os.ReadFile(filePath)
-		if err != nil {
-			return nil, fmt.Errorf("failed reading local dashboard file %s: %w", filePath, err)
-		}
+	rawJSON, err := s.loaders.Load(ctx, importOpts.SourcePathOrURL, s.baseDir)
+	if err != nil {
+		return nil, err
 	}
 
 	var dashMap map[string]interface{}

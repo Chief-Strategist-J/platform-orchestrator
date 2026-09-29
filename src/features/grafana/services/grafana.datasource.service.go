@@ -4,9 +4,10 @@ Package services provides isolated, domain-specific services for Grafana lifecyc
 ALGORITHM BLUEPRINT (DatasourceService):
 1. Datasource Operations: List, Get, Create, Update, Delete, Health Probe, Batch Sync.
 2. Endpoint Decoupling: Uses centralized typed endpoint constants from the endpoints package.
-3. Client Dynamic Resolution: Uses GrafanaClient for auth headers and network transport.
-4. OpenTelemetry Tracing: Wraps every public operation in an attributed span.
-5. Invariants:
+3. Declarative Template Registry: Resolves built-in and custom datasource definitions from rules.DefaultDatasourceRegistry (Rule 1: Registry pattern).
+4. Declarative Validation: Enforces data normalization and invariants via rules.DatasourceRules (Rule 3: Rules as Data).
+5. OpenTelemetry Tracing: Wraps every public operation in an attributed span.
+6. Invariants:
    - Zero inline comments inside function bodies.
    - Non-200 responses return descriptive error envelopes.
 */
@@ -16,7 +17,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +34,7 @@ type DatasourceService struct {
 	tracer   ports.TracerPort
 	baseDir  string
 	resolver *paths.PathResolver
+	registry *rules.DatasourceTemplateRegistry
 }
 
 func NewDatasourceService(tracer ports.TracerPort, baseDir string) *DatasourceService {
@@ -41,6 +42,7 @@ func NewDatasourceService(tracer ports.TracerPort, baseDir string) *DatasourceSe
 		tracer:   tracer,
 		baseDir:  baseDir,
 		resolver: paths.NewPathResolver(baseDir),
+		registry: rules.DefaultDatasourceRegistry,
 	}
 }
 
@@ -84,8 +86,8 @@ func (s *DatasourceService) Create(ctx context.Context, opts types.ClientOptions
 	ctx, endSpan := s.tracer.StartSpan(ctx, "grafana.datasources.create")
 	defer endSpan()
 
-	payload = rules.NormalizeDatasourcePayload(payload)
-	if err := rules.ValidateDatasourcePayload(payload); err != nil {
+	normalized, err := rules.DatasourceRules.Execute(payload)
+	if err != nil {
 		return nil, err
 	}
 
@@ -99,13 +101,13 @@ func (s *DatasourceService) Create(ctx context.Context, opts types.ClientOptions
 		Message string `json:"message"`
 	}
 
-	_, err := c.Do(ctx, http.MethodPost, endpoints.EndpointDatasources, payload, &createdDS)
+	_, err = c.Do(ctx, http.MethodPost, endpoints.EndpointDatasources, normalized, &createdDS)
 	latency := float64(time.Since(start).Microseconds()) / 1000.0
 
 	if err != nil {
 		return &schema.SingleDatasourceResult{
-			Service:        payload.Type,
-			DatasourceName: payload.Name,
+			Service:        normalized.Type,
+			DatasourceName: normalized.Name,
 			Status:         "failed",
 			Message:        err.Error(),
 			LatencyMs:      latency,
@@ -115,12 +117,12 @@ func (s *DatasourceService) Create(ctx context.Context, opts types.ClientOptions
 
 	uid := createdDS.UID
 	if uid == "" {
-		uid = payload.UID
+		uid = normalized.UID
 	}
 
 	return &schema.SingleDatasourceResult{
-		Service:        payload.Type,
-		DatasourceName: payload.Name,
+		Service:        normalized.Type,
+		DatasourceName: normalized.Name,
 		DatasourceUID:  uid,
 		DatasourceID:   createdDS.ID,
 		Status:         "created",
@@ -134,7 +136,7 @@ func (s *DatasourceService) Update(ctx context.Context, opts types.ClientOptions
 	ctx, endSpan := s.tracer.StartSpan(ctx, "grafana.datasources.update")
 	defer endSpan()
 
-	payload = rules.NormalizeDatasourcePayload(payload)
+	normalized := rules.DatasourceRules.Normalize(payload)
 	c := client.NewGrafanaClient(opts, s.resolver)
 	start := time.Now()
 
@@ -146,13 +148,13 @@ func (s *DatasourceService) Update(ctx context.Context, opts types.ClientOptions
 		Message string `json:"message"`
 	}
 
-	_, err := c.Do(ctx, http.MethodPut, targetPath, payload, &updatedDS)
+	_, err := c.Do(ctx, http.MethodPut, targetPath, normalized, &updatedDS)
 	latency := float64(time.Since(start).Microseconds()) / 1000.0
 
 	if err != nil {
 		return &schema.SingleDatasourceResult{
-			Service:        payload.Type,
-			DatasourceName: payload.Name,
+			Service:        normalized.Type,
+			DatasourceName: normalized.Name,
 			Status:         "failed",
 			Message:        err.Error(),
 			LatencyMs:      latency,
@@ -161,8 +163,8 @@ func (s *DatasourceService) Update(ctx context.Context, opts types.ClientOptions
 	}
 
 	return &schema.SingleDatasourceResult{
-		Service:        payload.Type,
-		DatasourceName: payload.Name,
+		Service:        normalized.Type,
+		DatasourceName: normalized.Name,
 		DatasourceUID:  idOrUID,
 		DatasourceID:   updatedDS.ID,
 		Status:         "updated",
@@ -318,138 +320,11 @@ func (s *DatasourceService) Sync(ctx context.Context, opts schema.DatasourceSync
 }
 
 func (s *DatasourceService) BuildDefaultPayload(svc string) (schema.DatasourcePayload, bool) {
-	switch strings.ToLower(svc) {
-	case "alloydb", "postgres", "postgresql":
-		host := s.getEnv("ALLOYDB_HOST", "localhost")
-		port := s.getEnv("ALLOYDB_PORT", "31420")
-		user := s.getEnv("ALLOYDB_USER", "postgres")
-		pass := s.getEnv("ALLOYDB_PASSWORD", "postgres")
-		db := s.getEnv("ALLOYDB_DB", "llmobs")
+	return s.registry.Resolve(svc, s.resolver)
+}
 
-		return schema.DatasourcePayload{
-			UID:       "ds-alloydb-platform",
-			Name:      "AlloyDB-Ledger",
-			Type:      "postgres",
-			Access:    "proxy",
-			URL:       fmt.Sprintf("%s:%s", host, port),
-			User:      user,
-			Database:  db,
-			BasicAuth: false,
-			IsDefault: false,
-			JSONData: map[string]interface{}{
-				"sslmode":         "disable",
-				"postgresVersion": 1500,
-				"maxOpenConns":    20,
-				"maxIdleConns":    5,
-				"connMaxLifetime": 14400,
-			},
-			SecureJSONData: map[string]string{
-				"password": pass,
-			},
-		}, true
-
-	case "clickhouse":
-		host := s.getEnv("CLICKHOUSE_HOST", "localhost")
-		port := s.getEnv("CLICKHOUSE_PORT", "31421")
-		user := s.getEnv("CLICKHOUSE_USER", "default")
-		pass := s.getEnv("CLICKHOUSE_PASSWORD", "")
-		db := s.getEnv("CLICKHOUSE_DB", "llmobs")
-
-		return schema.DatasourcePayload{
-			UID:       "ds-clickhouse-analytics",
-			Name:      "ClickHouse-Analytics",
-			Type:      "grafana-clickhouse-datasource",
-			Access:    "proxy",
-			URL:       fmt.Sprintf("http://%s:%s", host, port),
-			User:      user,
-			Database:  db,
-			BasicAuth: false,
-			IsDefault: false,
-			JSONData: map[string]interface{}{
-				"port":            31421,
-				"server":          host,
-				"defaultDatabase": db,
-				"protocol":        "http",
-			},
-			SecureJSONData: map[string]string{
-				"password": pass,
-			},
-		}, true
-
-	case "redis":
-		host := s.getEnv("REDIS_HOST", "localhost")
-		port := s.getEnv("REDIS_PORT", "31413")
-		pass := s.getEnv("REDIS_PASSWORD", "")
-
-		return schema.DatasourcePayload{
-			UID:       "ds-redis-ledger",
-			Name:      "Redis-Ledger",
-			Type:      "redis-datasource",
-			Access:    "proxy",
-			URL:       fmt.Sprintf("redis://%s:%s", host, port),
-			BasicAuth: false,
-			IsDefault: false,
-			JSONData: map[string]interface{}{
-				"poolSize": 5,
-				"timeout":  10,
-			},
-			SecureJSONData: map[string]string{
-				"password": pass,
-			},
-		}, true
-
-	case "tempo":
-		host := s.getEnv("TEMPO_HOST", "localhost")
-		port := s.getEnv("TEMPO_PORT", "31416")
-
-		return schema.DatasourcePayload{
-			UID:       "ds-tempo-traces",
-			Name:      "Tempo-Traces",
-			Type:      "tempo",
-			Access:    "proxy",
-			URL:       fmt.Sprintf("http://%s:%s", host, port),
-			BasicAuth: false,
-			IsDefault: true,
-			JSONData: map[string]interface{}{
-				"tracesToLogs": map[string]interface{}{
-					"datasourceUid": "ds-clickhouse-analytics",
-				},
-			},
-		}, true
-
-	case "prometheus":
-		host := s.getEnv("PROMETHEUS_HOST", "localhost")
-		port := s.getEnv("PROMETHEUS_PORT", "9090")
-
-		return schema.DatasourcePayload{
-			UID:       "ds-prometheus-metrics",
-			Name:      "Prometheus",
-			Type:      "prometheus",
-			Access:    "proxy",
-			URL:       fmt.Sprintf("http://%s:%s", host, port),
-			BasicAuth: false,
-			IsDefault: false,
-			JSONData: map[string]interface{}{
-				"httpMethod": "POST",
-			},
-		}, true
-
-	case "loki":
-		host := s.getEnv("LOKI_HOST", "localhost")
-		port := s.getEnv("LOKI_PORT", "3100")
-
-		return schema.DatasourcePayload{
-			UID:       "ds-loki-logs",
-			Name:      "Loki-Logs",
-			Type:      "loki",
-			Access:    "proxy",
-			URL:       fmt.Sprintf("http://%s:%s", host, port),
-			BasicAuth: false,
-			IsDefault: false,
-		}, true
-	}
-
-	return schema.DatasourcePayload{}, false
+func (s *DatasourceService) TemplateRegistry() *rules.DatasourceTemplateRegistry {
+	return s.registry
 }
 
 func (s *DatasourceService) provisionSingle(ctx context.Context, c *client.GrafanaClient, payload schema.DatasourcePayload, testConnection bool) schema.SingleDatasourceResult {
@@ -537,14 +412,4 @@ func (s *DatasourceService) provisionSingle(ctx context.Context, c *client.Grafa
 	}
 
 	return result
-}
-
-func (s *DatasourceService) getEnv(key, fallback string) string {
-	if val := os.Getenv(key); val != "" {
-		return val
-	}
-	if s.resolver != nil {
-		return s.resolver.ResolveEnvOrConfig(key, fallback)
-	}
-	return fallback
 }
