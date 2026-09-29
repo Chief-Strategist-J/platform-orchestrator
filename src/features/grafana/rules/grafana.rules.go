@@ -3,11 +3,13 @@ Package rules provides declarative validation and normalization rules for Grafan
 
 ALGORITHM BLUEPRINT:
 1. NormalizeDatasourcePayload: Ensures essential fields (Name, Type, Access, URL) are populated with valid defaults.
-2. ValidateDatasourcePayload: Evaluates mandatory payload invariants.
-3. ValidateDashboardPayload: Asserts dashboard object structure and required title metadata.
-4. ValidateAlertRulePayload: Asserts rule title, folder UID, rule group, and condition queries.
-5. ValidateContactPointPayload: Asserts contact point name and supported notification type.
-6. Invariants:
+2. NormalizeAlertRulePayload: Trims whitespace and ensures maps are initialized.
+3. NormalizeContactPointPayload: Trims whitespace and ensures settings map is initialized.
+4. ValidateDatasourcePayload: Evaluates mandatory payload invariants.
+5. ValidateDashboardPayload: Asserts dashboard object structure and required title metadata.
+6. ValidateAlertRulePayload: Asserts rule title, folder UID, rule group, and condition queries.
+7. ValidateContactPointPayload: Asserts contact point name and supported notification type.
+8. Invariants:
    - Zero inline comments inside function bodies.
    - Access mode defaults to 'proxy' when omitted.
    - All string attributes trimmed of trailing/leading whitespace.
@@ -37,6 +39,33 @@ func NormalizeDatasourcePayload(payload schema.DatasourcePayload) schema.Datasou
 	}
 
 	return payload
+}
+
+func NormalizeAlertRulePayload(rule schema.AlertRulePayload) schema.AlertRulePayload {
+	rule.Title = strings.TrimSpace(rule.Title)
+	rule.RuleGroup = strings.TrimSpace(rule.RuleGroup)
+	rule.FolderUID = strings.TrimSpace(rule.FolderUID)
+	rule.Condition = strings.TrimSpace(rule.Condition)
+
+	if rule.Annotations == nil {
+		rule.Annotations = make(map[string]string)
+	}
+	if rule.Labels == nil {
+		rule.Labels = make(map[string]string)
+	}
+
+	return rule
+}
+
+func NormalizeContactPointPayload(cp schema.ContactPointPayload) schema.ContactPointPayload {
+	cp.Name = strings.TrimSpace(cp.Name)
+	cp.Type = strings.TrimSpace(cp.Type)
+
+	if cp.Settings == nil {
+		cp.Settings = make(map[string]interface{})
+	}
+
+	return cp
 }
 
 func ValidateDatasourcePayload(payload schema.DatasourcePayload) error {
