@@ -42,50 +42,88 @@ packages/platform-orchestrator/
 
 ## Build & Test
 
-Compile the orchestrator binary into the project's root `bin/` directory:
+```bash
+cd packages/platform-orchestrator && \
+go build \
+  # ── OUTPUT TARGET ──────────────────────────────────────────────────────────
+  -o ../../bin/llmobs \
+  # File path: Destination binary relative to workspace root.
+  # Convention: All compiled binaries land in the top-level bin/ directory.
+  ./main.go
+  # Entry point: Go package path for the main package.
+```
 
 ```bash
-# Build binary
-cd packages/platform-orchestrator
-go build -o ../../bin/llmobs ./main.go
-
-# Run all unit test suites
-go test -v ./...
+go test \
+  # ── VERBOSITY & SCOPE ──────────────────────────────────────────────────────
+  -v \
+  # Boolean flag: Streams each test name and PASS/FAIL status to stdout.
+  # Omit in CI pipelines to reduce log noise; keep enabled during local dev.
+  ./...
+  # Package pattern: Recursively runs all test files in the module.
+  # Alternative: ./src/features/grafana/... to target a single domain.
 ```
 
 ---
 
 ## Complete CLI Command Reference
 
-### 1. Platform Stack Lifecycle
+### 1. Platform Stack Lifecycle (`up`, `down`, `status`, `logs`, `restart`)
 
 ```bash
-# Start infrastructure stack with interactive profile selector
-./bin/llmobs up
+./bin/llmobs up \
+  # ── PROFILE SELECTION ──────────────────────────────────────────────────────
+  [profile...] \
+  # String (variadic): One or more named stack profiles.
+  # Valid values:
+  #   full      — All 10 core infrastructure services.
+  #   db        — AlloyDB + ClickHouse only.
+  #   streaming — Kafka + Redis only.
+  #   stateless — Traefik + OTel + Temporal (no persistent volumes).
+  #   stateful  — AlloyDB + ClickHouse + Redis + Kafka (persistent volumes).
+  # Default: Interactive selector (prompts when no profile is supplied).
+  #
+  # Examples:
+  #   ./bin/llmobs up full
+  #   ./bin/llmobs up db streaming
 
-# Start full stack directly (all 10 core services)
-./bin/llmobs up full
+  # ── DOCKER NETWORK PARAMETERS ──────────────────────────────────────────────
+  --network-name=llmobs-network \
+  # String: Name of the Docker bridge network created for inter-container routing.
+  # Default: "llmobs-network".
+  --network-subnet=172.28.0.0/16 \
+  # CIDR string: IP address range allocated to the Docker bridge.
+  # Format: "x.x.x.x/prefix". Must not conflict with existing host routes.
+  --network-gateway=172.28.0.1
+  # IPv4 string: Gateway address on the Docker bridge.
+  # Default: First host address of the subnet.
+```
 
-# Start specific profile subsets
-./bin/llmobs up db streaming
-./bin/llmobs up stateless
-./bin/llmobs up stateful
-
-# Custom Docker network parameters
-./bin/llmobs up full --network-name llmobs-network --network-subnet 172.28.0.0/16 --network-gateway 172.28.0.1
-
-# Display live status of all containers
+```bash
 ./bin/llmobs status
+# Outputs a live table of all containers: name, image, status, uptime, and mapped ports.
+```
 
-# Stream container logs
-./bin/llmobs logs
-./bin/llmobs logs 100
+```bash
+./bin/llmobs logs \
+  # ── LOG TAIL DEPTH ─────────────────────────────────────────────────────────
+  [lines]
+  # Integer (optional): Number of tail lines to stream per container.
+  # Default: 50.
+  # Example: ./bin/llmobs logs 100
+```
 
-# Restart the platform stack
-./bin/llmobs restart full
+```bash
+./bin/llmobs restart \
+  # ── PROFILE SCOPE ──────────────────────────────────────────────────────────
+  [profile...]
+  # String (variadic): Same profile tokens as "up". Performs down then up.
+  # Example: ./bin/llmobs restart full
+```
 
-# Stop all containers cleanly and remove orphan resources
+```bash
 ./bin/llmobs down
+# Stops all running containers and removes orphan networks and anonymous volumes.
 ```
 
 ---
@@ -93,206 +131,382 @@ go test -v ./...
 ### 2. Health Verification & Diagnostic Probes (`health`)
 
 ```bash
-# Basic concurrent TCP/HTTP connectivity checks across all active endpoints
-./bin/llmobs health
+./bin/llmobs health \
+  # ── PROBE DEPTH ────────────────────────────────────────────────────────────
+  [--deep] \
+  # Boolean flag: Activates deep functional verification beyond TCP reachability.
+  # Deep checks performed per service:
+  #   alloydb     — Authenticates via PostgreSQL wire protocol; runs SELECT 1.
+  #   redis       — Issues RESP PING; validates PONG response.
+  #   clickhouse  — Executes "SELECT 1" over HTTP query interface.
+  #   grafana     — Calls /api/health; validates JSON {"database":"ok"}.
+  # Omit flag for fast concurrent TCP/HTTP reachability checks only.
 
-# Deep functional verification (PostgreSQL auth, Redis RESP, ClickHouse queries, Grafana API)
-./bin/llmobs health --deep
+  # ── SERVICE FILTER ─────────────────────────────────────────────────────────
+  --services=alloydb,clickhouse,redis,grafana \
+  # Comma-delimited string: Subset of service names to probe.
+  # Valid values: alloydb, clickhouse, redis, grafana, kafka, tempo, otel, temporal, traefik.
+  # Default: All services registered in the active profile.
 
-# Target specific services
-./bin/llmobs health --deep --services alloydb,clickhouse,redis,grafana
-
-# Target specific profile groups
-./bin/llmobs health --deep --profiles stateful
+  # ── PROFILE FILTER ─────────────────────────────────────────────────────────
+  --profiles=stateful
+  # Comma-delimited string: Restricts probing to services within the named profile group.
+  # Valid values: full, db, streaming, stateless, stateful.
 ```
 
 ---
 
 ### 3. External Services & Custom Connections (`service`)
 
-Dynamically register, probe, manage, and bridge ANY external service or custom data connection (LLM APIs, External DBs, Vector Stores, Caches, Queues):
+Dynamically register, probe, manage, and bridge ANY external service or custom data connection (LLM APIs, external databases, vector stores, queues).
 
 ```bash
-# Register an external LLM Provider (OpenAI, Anthropic, Groq, Ollama)
-./bin/llmobs service add OpenAI --type openai --url https://api.openai.com/v1 --category llm --auth-token $OPENAI_API_KEY
+./bin/llmobs service add <NAME> \
+  # ── SERVICE IDENTITY ───────────────────────────────────────────────────────
+  --type=openai \
+  # Enum: "openai" | "anthropic" | "groq" | "ollama" | "postgres" | "mysql" |
+  #       "redis" | "qdrant" | "pinecone" | "milvus" | "weaviate" | "kafka" | "custom".
+  # Determines which connectivity probe and Grafana datasource adapter are used.
+  --category=llm \
+  # Enum: "llm" | "database" | "vector-db" | "cache" | "queue" | "custom".
+  # Used for list filtering and Grafana folder placement.
 
-# Register an external Database
-./bin/llmobs service add Prod-Postgres --type postgres --host db.prod.internal --port 5432 --category database --database analytics --auth-user admin --auth-pass secret
+  # ── NETWORK COORDINATES ────────────────────────────────────────────────────
+  --url=https://api.openai.com/v1 \
+  # URL string: Full base URL for HTTP/HTTPS services.
+  # Mutually exclusive with --host + --port (used for raw TCP services).
+  --host=db.prod.internal \
+  # Hostname or IP: Used for TCP-socket services (postgres, redis, kafka, etc.).
+  --port=5432 \
+  # Integer: 1 to 65535. TCP port the remote service listens on.
 
-# Register a Vector Database (Qdrant, Pinecone, Milvus, Weaviate)
-./bin/llmobs service add Qdrant-Cluster --type qdrant --url https://qdrant.internal:6333 --category vector-db
+  # ── DATABASE COORDINATES ───────────────────────────────────────────────────
+  --database=analytics \
+  # String: Database name to authenticate against (postgres, mysql, clickhouse).
 
-# List all registered services in tabular format
-./bin/llmobs service list
-./bin/llmobs service list --category database
+  # ── AUTHENTICATION ─────────────────────────────────────────────────────────
+  --auth-token=$OPENAI_API_KEY \
+  # String: Bearer token or API key. Stored encrypted in the service registry.
+  --auth-user=admin \
+  # String: Username for database or basic-auth services.
+  --auth-pass=secret
+  # String: Password for database or basic-auth services.
+  #
+  # Examples:
+  #   ./bin/llmobs service add OpenAI --type openai --url https://api.openai.com/v1 --category llm --auth-token $OPENAI_API_KEY
+  #   ./bin/llmobs service add Prod-Postgres --type postgres --host db.prod.internal --port 5432 --category database --database analytics --auth-user admin --auth-pass secret
+  #   ./bin/llmobs service add Qdrant-Cluster --type qdrant --url https://qdrant.internal:6333 --category vector-db
+```
 
-# Get JSON definition of a service
-./bin/llmobs service get OpenAI
+```bash
+./bin/llmobs service list \
+  # ── OUTPUT FILTER ──────────────────────────────────────────────────────────
+  [--category=database]
+  # Enum (optional): Restricts table to services of a specific category.
+  # Omit to list all registered services.
+```
 
-# Run a live diagnostic health probe (HTTP status or TCP socket probe)
-./bin/llmobs service test Prod-Postgres
+```bash
+./bin/llmobs service get <NAME>
+# Returns the full JSON definition of a registered service including masked credentials.
+```
 
-# Automatically bridge the data connection to Grafana as a datasource
-./bin/llmobs service sync-to-grafana Prod-Postgres
+```bash
+./bin/llmobs service test <NAME>
+# Runs a live diagnostic probe (HTTP GET or TCP socket) and reports latency + status.
+```
 
-# Unregister a service
-./bin/llmobs service delete OpenAI
+```bash
+./bin/llmobs service sync-to-grafana <NAME>
+# Automatically bridges the registered service to Grafana as a datasource.
+# Applies the correct datasource type adapter based on --type.
+```
+
+```bash
+./bin/llmobs service delete <NAME>
+# Permanently removes the service registration from the registry.
 ```
 
 ---
 
 ### 4. Grafana Datasources (`datasource`)
 
-Dynamically provision, test, update, list, and delete ANY Grafana datasource without editing YAML provisioning files:
+Dynamically provision, test, update, list, and delete ANY Grafana datasource without editing YAML provisioning files.
 
 ```bash
-# List all configured Grafana datasources
+./bin/llmobs datasource add <NAME> \
+  # ── DATASOURCE TYPE ────────────────────────────────────────────────────────
+  --type=prometheus \
+  # Enum: "prometheus" | "postgres" | "clickhouse" | "redis" | "tempo" | "loki" | "jaeger".
+  # Determines plugin ID sent to the Grafana Provisioning API.
+
+  # ── NETWORK COORDINATES ────────────────────────────────────────────────────
+  --url=http://prometheus:9090 \
+  # URL string: Internal Docker network address or external URL of the datasource.
+
+  # ── DATABASE AUTHENTICATION (postgres / clickhouse) ────────────────────────
+  --user=admin \
+  # String: Database user for SQL-type datasources.
+  --password=secret \
+  # String: Database password. Sent to Grafana over TLS; never stored in plaintext locally.
+  --database=analytics
+  # String: Target database name for SQL-type datasources.
+  #
+  # Examples:
+  #   ./bin/llmobs datasource add Prometheus --type prometheus --url http://prometheus:9090
+  #   ./bin/llmobs datasource add CustomPostgres --type postgres --url host.docker.internal:5432 --user admin --password secret --database analytics
+```
+
+```bash
 ./bin/llmobs datasource list
+# Lists all configured Grafana datasources in tabular format (name, type, URL, UID).
+```
 
-# Add a Prometheus datasource
-./bin/llmobs datasource add Prometheus --type prometheus --url http://prometheus:9090
+```bash
+./bin/llmobs datasource test <NAME>
+# Calls Grafana datasource health check endpoint and reports status + round-trip time.
+```
 
-# Add an AlloyDB / PostgreSQL datasource
-./bin/llmobs datasource add CustomPostgres --type postgres --url host.docker.internal:5432 --user admin --password secret --database analytics
+```bash
+./bin/llmobs datasource sync \
+  # ── SYNC TARGETS ───────────────────────────────────────────────────────────
+  [service...]
+  # String (variadic): Named platform datasources to synchronize from environment config.
+  # Valid values: alloydb, clickhouse, redis, tempo.
+  # Default: All four platform datasources when no arguments are supplied.
+  #
+  # Examples:
+  #   ./bin/llmobs datasource sync
+  #   ./bin/llmobs datasource sync alloydb clickhouse redis tempo
+```
 
-# Test connection health of a datasource
-./bin/llmobs datasource test AlloyDB
-
-# Synchronize default platform datasources from environment
-./bin/llmobs datasource sync
-./bin/llmobs datasource sync alloydb clickhouse redis tempo
-
-# Delete a datasource by Name or UID
-./bin/llmobs datasource delete CustomPostgres
+```bash
+./bin/llmobs datasource delete <NAME>
+# Deletes the datasource by Name or UID via the Grafana HTTP API.
 ```
 
 ---
 
 ### 5. Grafana Dashboards (`dashboard`)
 
-Dynamically import, export, search, view, and delete Grafana dashboards:
+Dynamically import, export, search, view, and delete Grafana dashboards.
 
 ```bash
-# List all configured dashboards
-./bin/llmobs dashboard list
+./bin/llmobs dashboard list \
+  # ── SEARCH FILTER ──────────────────────────────────────────────────────────
+  [--query="telemetry"]
+  # String (optional): Keyword filter applied against dashboard titles.
+  # Omit to list all dashboards across all folders.
+```
 
-# Search dashboards by keyword
-./bin/llmobs dashboard list --query "telemetry"
+```bash
+./bin/llmobs dashboard import <SOURCE> \
+  # ── SOURCE ─────────────────────────────────────────────────────────────────
+  # String: Either:
+  #   File path — Local JSON dashboard file (e.g., ./dashboards/llm-telemetry.json).
+  #   URL       — Grafana.com download endpoint.
+  #               Example: https://grafana.com/api/dashboards/1860/revisions/latest/download
 
-# Import dashboard from a local JSON file
-./bin/llmobs dashboard import ./dashboards/llm-telemetry.json --overwrite
+  # ── CONFLICT RESOLUTION ────────────────────────────────────────────────────
+  [--overwrite]
+  # Boolean flag: Replaces an existing dashboard with the same UID.
+  # Omit to fail-fast if a dashboard with the same UID already exists.
+  #
+  # Examples:
+  #   ./bin/llmobs dashboard import ./dashboards/llm-telemetry.json --overwrite
+  #   ./bin/llmobs dashboard import https://grafana.com/api/dashboards/1860/revisions/latest/download
+```
 
-# Import dashboard directly from Grafana.com URL
-./bin/llmobs dashboard import https://grafana.com/api/dashboards/1860/revisions/latest/download
+```bash
+./bin/llmobs dashboard get <UID>
+# Returns the full Grafana JSON model of the dashboard identified by UID.
+```
 
-# Fetch full JSON definition of a dashboard by UID
-./bin/llmobs dashboard get <uid>
+```bash
+./bin/llmobs dashboard export <UID> \
+  # ── OUTPUT DESTINATION ─────────────────────────────────────────────────────
+  --output=./backup-dash.json
+  # File path: Writes dashboard JSON to the specified local file.
+```
 
-# Export dashboard JSON to a file
-./bin/llmobs dashboard export <uid> --output ./backup-dash.json
-
-# Delete a dashboard by UID
-./bin/llmobs dashboard delete <uid>
+```bash
+./bin/llmobs dashboard delete <UID>
+# Permanently deletes the dashboard from Grafana by UID.
 ```
 
 ---
 
 ### 6. Grafana Unified Alerting & Contact Points (`alert`)
 
-Dynamically manage alert rules and notification channels (Slack, Webhooks, Email, PagerDuty):
+Dynamically manage alert rules and notification channels (Slack, Webhooks, Email, PagerDuty).
 
 ```bash
-# List all configured alert rules
 ./bin/llmobs alert list
+# Lists all alert rules in tabular format (UID, name, group, state).
+```
 
-# Add or update an alert rule from a JSON file
-./bin/llmobs alert add ./alerts/high-latency-rule.json
+```bash
+./bin/llmobs alert add <FILE>
+# Adds or updates an alert rule from a Grafana-format JSON file.
+# Performs an upsert: creates if UID is absent, updates if UID already exists.
+```
 
-# View details of an alert rule
-./bin/llmobs alert get <uid>
+```bash
+./bin/llmobs alert get <UID>
+# Returns the full JSON definition of the alert rule identified by UID.
+```
 
-# Delete an alert rule
-./bin/llmobs alert delete <uid>
+```bash
+./bin/llmobs alert delete <UID>
+# Permanently removes the alert rule from Grafana.
+```
 
-# List all notification contact points
+```bash
 ./bin/llmobs alert contact-point list
+# Lists all notification contact points (name, type, UID).
+```
 
-# Add a Slack notification receiver
-./bin/llmobs alert contact-point add Slack-Alerts --type slack --webhook-url https://hooks.slack.com/services/...
+```bash
+./bin/llmobs alert contact-point add <NAME> \
+  # ── RECEIVER TYPE ──────────────────────────────────────────────────────────
+  --type=slack \
+  # Enum: "slack" | "webhook" | "email" | "pagerduty" | "opsgenie" | "victorops".
+  # Determines which Grafana notifier plugin is instantiated.
 
-# Add a Webhook notification receiver
-./bin/llmobs alert contact-point add Ops-Webhook --type webhook --url https://webhook.internal/alerts
+  # ── DELIVERY COORDINATES ───────────────────────────────────────────────────
+  --webhook-url=https://hooks.slack.com/services/... \
+  # URL string: Incoming webhook URL (slack, webhook types).
+  --url=https://webhook.internal/alerts
+  # URL string: Generic target URL for webhook type.
+  #
+  # Examples:
+  #   ./bin/llmobs alert contact-point add Slack-Alerts --type slack --webhook-url https://hooks.slack.com/services/...
+  #   ./bin/llmobs alert contact-point add Ops-Webhook --type webhook --url https://webhook.internal/alerts
+```
 
-# Send a test notification to verify contact point connectivity
-./bin/llmobs alert contact-point test Slack-Alerts
+```bash
+./bin/llmobs alert contact-point test <NAME>
+# Sends a synthetic test notification and reports delivery status.
+```
 
-# Delete a contact point
-./bin/llmobs alert contact-point delete Slack-Alerts
+```bash
+./bin/llmobs alert contact-point delete <NAME>
+# Permanently removes the contact point from Grafana.
 ```
 
 ---
 
 ### 7. Resource Tuning & Configuration (`config`)
 
-View, tune, and persist Docker container resource limits (CPU, memory, network):
+View, tune, and persist Docker container resource limits (CPU, memory, network).
 
 ```bash
-# View active platform configuration and resource limits
-./bin/llmobs config
+./bin/llmobs config \
+  # ── INTERACTIVE MODE ───────────────────────────────────────────────────────
+  [-i] \
+  # Boolean flag: Launches an interactive TUI wizard for guided resource configuration.
+  # Omit to print the current configuration in tabular format and exit.
 
-# Interactive configuration wizard
-./bin/llmobs config -i
+  # ── MEMORY LIMITS ──────────────────────────────────────────────────────────
+  --temporal-memory=4096M \
+  # String: Memory limit for the Temporal Engine container.
+  # Format: Integer followed by unit — "M" (mebibytes) or "G" (gibibytes).
+  # Examples: "2048M", "4G".
+  --clickhouse-memory=8192M \
+  # String: Memory limit for the ClickHouse Analytics container.
+  --alloydb-memory=6144M \
+  # String: Memory limit for the AlloyDB (PostgreSQL) container.
 
-# Set specific service resource limits
-./bin/llmobs config --temporal-memory 4096M --clickhouse-memory 8192M --alloydb-memory 6144M
-
-# Apply limits and automatically recreate containers
-./bin/llmobs config --temporal-memory 4096M --restart
+  # ── APPLY & RESTART ────────────────────────────────────────────────────────
+  [--restart]
+  # Boolean flag: Automatically recreates affected containers after persisting limits.
+  # Omit to persist limits to config without restarting running containers.
+  #
+  # Examples:
+  #   ./bin/llmobs config
+  #   ./bin/llmobs config -i
+  #   ./bin/llmobs config --temporal-memory 4096M --clickhouse-memory 8192M --alloydb-memory 6144M
+  #   ./bin/llmobs config --temporal-memory 4096M --restart
 ```
 
 ---
 
 ### 8. Platform Bootstrapping & Setup (`setup`)
 
-Executes the automated 7-step platform bootstrapping pipeline:
+Executes the automated 7-step platform bootstrapping pipeline.
 
 ```bash
-# Interactive setup (prompts for passwords with safe defaults)
-./bin/llmobs setup -i
+./bin/llmobs setup \
+  # ── INTERACTIVE MODE ───────────────────────────────────────────────────────
+  [-i] \
+  # Boolean flag: Enables interactive prompts for passwords with safe auto-generated defaults.
+  # Omit for fully automated non-interactive bootstrapping using flag values or defaults.
 
-# Automated non-interactive setup
-./bin/llmobs setup
+  # ── CREDENTIAL OVERRIDES ───────────────────────────────────────────────────
+  --db-password=my_secret_pw \
+  # String: Master password for AlloyDB (PostgreSQL). Stored in .env and Docker secrets.
+  --redis-password=my_redis_pw
+  # String: AUTH password for the Redis Ledger.
+  #
+  # Examples:
+  #   ./bin/llmobs setup -i
+  #   ./bin/llmobs setup
+  #   ./bin/llmobs setup --db-password my_secret_pw --redis-password my_redis_pw
+```
 
-# Custom credentials via CLI flags
-./bin/llmobs setup --db-password my_secret_pw --redis-password my_redis_pw
-
-# Verify credentials against running databases
+```bash
 ./bin/llmobs verify-credentials
+# Authenticates against AlloyDB and Redis using stored credentials and reports pass/fail.
 ```
 
 ---
 
 ### 9. Horizontal Scaling (`scale`)
 
-Scale stateless services or provision simulated worker nodes:
+Scale stateless services or provision simulated worker nodes.
 
 ```bash
-# Interactive scaling menu
 ./bin/llmobs scale
+# Launches an interactive scaling menu when called with no subcommand.
+```
 
-# Scale a stateless service to N replicas
-./bin/llmobs scale service llmobs-temporal 3
-./bin/llmobs scale service llmobs-traefik 2
+```bash
+./bin/llmobs scale service <SERVICE_NAME> <REPLICAS> \
+  # ── SERVICE IDENTIFIER ─────────────────────────────────────────────────────
+  # String: Docker Compose service name to scale.
+  # Valid values: llmobs-temporal, llmobs-traefik, llmobs-otel-collector.
+  # Note: Stateful services (AlloyDB, ClickHouse, Redis, Kafka) cannot be horizontally scaled.
 
-# Scale simulated worker nodes
-./bin/llmobs scale node 1 host.docker.internal
-./bin/llmobs scale node 2 host.docker.internal
+  # ── REPLICA COUNT ──────────────────────────────────────────────────────────
+  # Integer: Desired number of container replicas. Minimum: 1.
+  #
+  # Examples:
+  #   ./bin/llmobs scale service llmobs-temporal 3
+  #   ./bin/llmobs scale service llmobs-traefik 2
+```
 
-# List active compute nodes
+```bash
+./bin/llmobs scale node <NODE_ID> <HOST> \
+  # ── NODE IDENTIFIER ────────────────────────────────────────────────────────
+  # Integer: Unique ID assigned to the simulated compute node (e.g., 1, 2, 3).
+
+  # ── NODE HOST ──────────────────────────────────────────────────────────────
+  # Hostname or IP: Docker host address for the simulated worker node.
+  # Default for local dev: host.docker.internal.
+  #
+  # Examples:
+  #   ./bin/llmobs scale node 1 host.docker.internal
+  #   ./bin/llmobs scale node 2 host.docker.internal
+```
+
+```bash
 ./bin/llmobs scale list
+# Lists all active compute nodes with their IDs, hosts, and status.
+```
 
-# Teardown a compute node
-./bin/llmobs scale down-node 2
+```bash
+./bin/llmobs scale down-node <NODE_ID>
+# Gracefully tears down and deregisters the compute node with the given ID.
 ```
 
 ---
@@ -300,14 +514,28 @@ Scale stateless services or provision simulated worker nodes:
 ### 10. Disaster Recovery & Compliance (`backup-purge`, `gdpr-erasure`)
 
 ```bash
-# Backup databases to timestamped archive
-./bin/llmobs backup-purge --backup-only
+./bin/llmobs backup-purge \
+  # ── BACKUP-ONLY MODE ───────────────────────────────────────────────────────
+  [--backup-only]
+  # Boolean flag: Dumps AlloyDB and ClickHouse to timestamped archives without purging volumes.
+  # Omit to perform backup AND purge of all persistent Docker volumes.
+  #
+  # Examples:
+  #   ./bin/llmobs backup-purge --backup-only
+  #   ./bin/llmobs backup-purge
+```
 
-# Backup and purge persistent Docker volumes
-./bin/llmobs backup-purge
+```bash
+./bin/llmobs gdpr-erasure \
+  # ── SUBJECT IDENTIFICATION ─────────────────────────────────────────────────
+  --user-id="usr_12345" \
+  # String: Unique identifier of the data subject requesting erasure.
+  # Applied across AlloyDB tables and ClickHouse event streams.
 
-# Execute GDPR/CCPA Right-to-Erasure across AlloyDB and ClickHouse
-./bin/llmobs gdpr-erasure --user-id "usr_12345" --actor-id "admin_ops"
+  # ── AUDIT TRAIL ────────────────────────────────────────────────────────────
+  --actor-id="admin_ops"
+  # String: Identity of the operator initiating erasure. Written to the audit log.
+  # Format: Any string; recommend service account name or operator email.
 ```
 
 ---
@@ -315,32 +543,52 @@ Scale stateless services or provision simulated worker nodes:
 ### 11. Security, Certificates & Ingress
 
 ```bash
-# Generate pure-Go self-signed TLS certificates (server.pem, ca.pem)
 ./bin/llmobs certs
+# Generates pure-Go self-signed X.509 certificates (server.pem, ca.pem) in config/certs/.
+# Certificate spec: 2048-bit RSA, SHA-256, 365-day validity, SAN for localhost + 127.0.0.1.
+```
 
-# Detect and resolve host port contention (ports 31410–31427)
+```bash
 ./bin/llmobs free-ports
+# Scans host ports 31410-31427 for contention, identifies conflicting processes,
+# and offers automated resolution (process termination or port reassignment).
+```
 
-# Manage Cloudflare Zero-Trust Ingress Tunnels
-./bin/llmobs cloudflare setup
-./bin/llmobs cloudflare start
-./bin/llmobs cloudflare status
-./bin/llmobs cloudflare logs
-./bin/llmobs cloudflare stop
+```bash
+./bin/llmobs cloudflare \
+  # ── SUBCOMMAND ─────────────────────────────────────────────────────────────
+  <subcommand>
+  # Enum: "setup" | "start" | "status" | "logs" | "stop".
+  #   setup  — Authenticates with Cloudflare Zero Trust and creates a named tunnel.
+  #   start  — Launches cloudflared daemon routing ingress to the Traefik gateway.
+  #   status — Reports tunnel health and active connector count.
+  #   logs   — Streams cloudflared daemon stdout.
+  #   stop   — Terminates the cloudflared daemon and closes the tunnel.
+  #
+  # Examples:
+  #   ./bin/llmobs cloudflare setup
+  #   ./bin/llmobs cloudflare start
+  #   ./bin/llmobs cloudflare status
+  #   ./bin/llmobs cloudflare logs
+  #   ./bin/llmobs cloudflare stop
 ```
 
 ---
 
 ### 12. REST API Daemon (`server`)
 
-Run the orchestrator as a background daemon exposing the HTTP REST API:
+Run the orchestrator as a background daemon exposing the HTTP REST API.
 
 ```bash
-# Start API daemon on port 31427 (default)
-./bin/llmobs server
-
-# Start API daemon on custom port
-./bin/llmobs server --port 8080
+./bin/llmobs server \
+  # ── LISTEN PORT ────────────────────────────────────────────────────────────
+  [--port=31427]
+  # Integer: 1 to 65535. Host port the HTTP API daemon binds to.
+  # Default: 31427.
+  #
+  # Examples:
+  #   ./bin/llmobs server
+  #   ./bin/llmobs server --port 8080
 ```
 
 #### REST API Endpoints Overview
