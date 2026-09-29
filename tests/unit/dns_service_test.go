@@ -30,7 +30,7 @@ func TestDNSHostsSyncAndRead(t *testing.T) {
 	}
 
 	tracer := observability.NewOTelTracerAdapter("test-tracer")
-	hostsSvc := dnsService.NewDNSHostsService(tracer)
+	hostsSvc := dnsService.NewDNSHostsService(tracer, nil)
 
 	report, err := hostsSvc.SyncHosts(context.Background(), []string{"grafana.internal.local", "traefik.internal.local"}, dnsTypes.SyncOptions{
 		TargetIP:      "127.0.0.1",

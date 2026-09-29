@@ -18,7 +18,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/traefik/client"
-	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/traefik/endpoints"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/traefik/schema"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/traefik/types"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
@@ -33,15 +32,19 @@ type TraefikMiddlewareService struct {
 }
 
 func NewTraefikMiddlewareService(tracer ports.TracerPort, baseDir string) *TraefikMiddlewareService {
+	resolver := paths.NewPathResolver(baseDir)
+	traefikCfg := resolver.GetTraefikConfig()
 	return &TraefikMiddlewareService{
 		tracer:   tracer,
 		baseDir:  baseDir,
-		resolver: paths.NewPathResolver(baseDir),
+		resolver: resolver,
 		middlewareDesc: ResourceDescriptor[schema.MiddlewareDefinition]{
 			ResourceName:       "Middleware",
-			CollectionEndpoint: endpoints.EndpointHTTPMiddlewares,
-			ItemEndpointFunc:   endpoints.BuildHTTPMiddlewarePath,
-			SpanPrefix:         "traefik.middlewares",
+			CollectionEndpoint: traefikCfg.API.Endpoints.HTTPMiddlewares,
+			ItemEndpointFunc: func(name string) string {
+				return fmt.Sprintf("%s/%s", traefikCfg.API.Endpoints.HTTPMiddlewares, name)
+			},
+			SpanPrefix: "traefik.middlewares",
 		},
 	}
 }

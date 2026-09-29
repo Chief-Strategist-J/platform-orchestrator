@@ -28,6 +28,48 @@ paths:
     - "traefik"
     - "alloydb"
 
+dns:
+  defaultIp: "127.0.0.1"
+  hostsPath: "/etc/hosts"
+  markers:
+    start: "# --- BEGIN LLMOBS PLATFORM DOMAINS ---"
+    end: "# --- END LLMOBS PLATFORM DOMAINS ---"
+  domains:
+    - "traefik.internal.local"
+    - "grafana.internal.local"
+    - "prometheus.internal.local"
+    - "alertmanager.internal.local"
+    - "tempo.internal.local"
+    - "loki.internal.local"
+    - "jaeger.internal.local"
+    - "postgres.internal.local"
+    - "gateway.llmobs.local"
+    - "grafana.llmobs.local"
+    - "tempo.llmobs.local"
+    - "otel.llmobs.local"
+    - "llmobs.gateway"
+    - "llmobs.grafana"
+    - "llmobs.tempo"
+    - "llmobs.otel"
+
+traefik:
+  api:
+    defaultUrl: "http://localhost:31411"
+    timeout: 10s
+    endpoints:
+      ping: "/ping"
+      overview: "/api/overview"
+      rawdata: "/api/rawdata"
+      entrypoints: "/api/entrypoints"
+      httpRouters: "/api/http/routers"
+      httpServices: "/api/http/services"
+      httpMiddlewares: "/api/http/middlewares"
+      tcpRouters: "/api/tcp/routers"
+      tcpServices: "/api/tcp/services"
+      tcpMiddlewares: "/api/tcp/middlewares"
+      udpRouters: "/api/udp/routers"
+      udpServices: "/api/udp/services"
+
 services:
   grafana:
     url: "http://localhost:31415"

@@ -2,12 +2,13 @@
 Package services implements atomic /etc/hosts domain synchronization and management.
 
 ALGORITHM BLUEPRINT (DNSHostsService):
-1. Demarcated Block Management: Updates hosts mappings inside a deterministic '# --- BEGIN LLMOBS PLATFORM DOMAINS ---' block.
+1. Demarcated Block Management: Updates hosts mappings inside YAML-configured demarcated markers.
 2. Safe Atomic Persistence: Reads original file, replaces or appends the block, writes to temporary file, and renames atomically.
 3. Backup & Rollback: Saves /etc/hosts.llmobs.bak before modifying target file.
 4. Invariants:
    - Zero inline comments inside function bodies.
    - Non-LLMObs lines in the hosts file are strictly preserved unchanged.
+   - Markers and target hosts paths are loaded dynamically from YAML config.
 */
 package services
 
@@ -23,27 +24,32 @@ import (
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/dns/schema"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/dns/types"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/infra/observability"
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/ports"
 )
 
-const (
-	BlockStartMarker = "# --- BEGIN LLMOBS PLATFORM DOMAINS ---"
-	BlockEndMarker   = "# --- END LLMOBS PLATFORM DOMAINS ---"
-)
-
 type DNSHostsService struct {
-	tracer ports.TracerPort
+	tracer   ports.TracerPort
+	resolver *paths.PathResolver
 }
 
-func NewDNSHostsService(tracer ports.TracerPort) *DNSHostsService {
+func NewDNSHostsService(tracer ports.TracerPort, resolver *paths.PathResolver) *DNSHostsService {
+	if resolver == nil {
+		resolver = paths.NewPathResolver("")
+	}
 	return &DNSHostsService{
-		tracer: tracer,
+		tracer:   tracer,
+		resolver: resolver,
 	}
 }
 
 func (s *DNSHostsService) GetHostsPath(customPath string) string {
 	if customPath != "" {
 		return customPath
+	}
+	cfg := s.resolver.GetDNSConfig()
+	if cfg.HostsPath != "" {
+		return cfg.HostsPath
 	}
 	return "/etc/hosts"
 }
@@ -55,17 +61,18 @@ func (s *DNSHostsService) ReadSyncedDomains(hostsPath string) (map[string]string
 		return nil, err
 	}
 
+	startMarker, endMarker := s.resolver.GetDNSMarkers()
 	result := make(map[string]string)
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	inBlock := false
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == BlockStartMarker {
+		if line == startMarker {
 			inBlock = true
 			continue
 		}
-		if line == BlockEndMarker {
+		if line == endMarker {
 			inBlock = false
 			continue
 		}
@@ -92,7 +99,11 @@ func (s *DNSHostsService) SyncHosts(ctx context.Context, domains []string, opts 
 
 	targetIP := opts.TargetIP
 	if targetIP == "" {
-		targetIP = "127.0.0.1"
+		cfg := s.resolver.GetDNSConfig()
+		targetIP = cfg.DefaultIP
+		if targetIP == "" {
+			targetIP = "127.0.0.1"
+		}
 	}
 	if err := rules.ValidateIP(targetIP); err != nil {
 		observability.RecordError(ctx, err)
@@ -132,6 +143,7 @@ func (s *DNSHostsService) SyncHosts(ctx context.Context, domains []string, opts 
 		originalData = []byte("")
 	}
 
+	startMarker, endMarker := s.resolver.GetDNSMarkers()
 	var cleanedLines []string
 	scanner := bufio.NewScanner(bytes.NewReader(originalData))
 	inBlock := false
@@ -139,11 +151,11 @@ func (s *DNSHostsService) SyncHosts(ctx context.Context, domains []string, opts 
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
-		if trimmed == BlockStartMarker {
+		if trimmed == startMarker {
 			inBlock = true
 			continue
 		}
-		if trimmed == BlockEndMarker {
+		if trimmed == endMarker {
 			inBlock = false
 			continue
 		}
@@ -153,11 +165,11 @@ func (s *DNSHostsService) SyncHosts(ctx context.Context, domains []string, opts 
 	}
 
 	var blockLines []string
-	blockLines = append(blockLines, BlockStartMarker)
+	blockLines = append(blockLines, startMarker)
 	for _, d := range validDomains {
 		blockLines = append(blockLines, fmt.Sprintf("%-16s %s", targetIP, d))
 	}
-	blockLines = append(blockLines, BlockEndMarker)
+	blockLines = append(blockLines, endMarker)
 
 	var finalBuffer bytes.Buffer
 	for _, l := range cleanedLines {
@@ -179,8 +191,10 @@ func (s *DNSHostsService) SyncHosts(ctx context.Context, domains []string, opts 
 		}, nil
 	}
 
-	backupPath := fmt.Sprintf("%s.llmobs.bak", targetPath)
-	_ = os.WriteFile(backupPath, originalData, 0644)
+	if len(originalData) > 0 {
+		backupPath := fmt.Sprintf("%s.llmobs.bak", targetPath)
+		_ = os.WriteFile(backupPath, originalData, 0644)
+	}
 
 	tmpPath := fmt.Sprintf("%s.llmobs.tmp", targetPath)
 	if err := os.WriteFile(tmpPath, finalBuffer.Bytes(), 0644); err != nil {

@@ -69,6 +69,41 @@ type SetupYAMLConfig struct {
 	Credentials  map[string]SetupCredentialConfig `yaml:"credentials" json:"credentials"`
 }
 
+type DnsMarkersConfig struct {
+	Start string `yaml:"start" json:"start"`
+	End   string `yaml:"end" json:"end"`
+}
+
+type DnsYAMLConfig struct {
+	DefaultIP string           `yaml:"defaultIp" json:"defaultIp"`
+	HostsPath string           `yaml:"hostsPath" json:"hostsPath"`
+	Markers   DnsMarkersConfig `yaml:"markers" json:"markers"`
+	Domains   []string         `yaml:"domains" json:"domains"`
+}
+
+type TraefikAPIEndpointsConfig struct {
+	Ping            string `yaml:"ping" json:"ping"`
+	Overview        string `yaml:"overview" json:"overview"`
+	RawData         string `yaml:"rawdata" json:"rawdata"`
+	Entrypoints     string `yaml:"entrypoints" json:"entrypoints"`
+	HTTPRouters     string `yaml:"httpRouters" json:"httpRouters"`
+	HTTPServices    string `yaml:"httpServices" json:"httpServices"`
+	HTTPMiddlewares string `yaml:"httpMiddlewares" json:"httpMiddlewares"`
+	TCPRouters      string `yaml:"tcpRouters" json:"tcpRouters"`
+	TCPServices     string `yaml:"tcpServices" json:"tcpServices"`
+	TCPMiddlewares  string `yaml:"tcpMiddlewares" json:"tcpMiddlewares"`
+	UDPRouters      string `yaml:"udpRouters" json:"udpRouters"`
+	UDPServices     string `yaml:"udpServices" json:"udpServices"`
+}
+
+type TraefikYAMLConfig struct {
+	API struct {
+		DefaultURL string                    `yaml:"defaultUrl" json:"defaultUrl"`
+		Timeout    string                    `yaml:"timeout" json:"timeout"`
+		Endpoints  TraefikAPIEndpointsConfig `yaml:"endpoints" json:"endpoints"`
+	} `yaml:"api" json:"api"`
+}
+
 type YAMLConfig struct {
 	Server struct {
 		Port         int    `yaml:"port"`
@@ -92,6 +127,8 @@ type YAMLConfig struct {
 	Paths struct {
 		Markers []string `yaml:"markers"`
 	} `yaml:"paths"`
+	DNS      DnsYAMLConfig                `yaml:"dns"`
+	Traefik  TraefikYAMLConfig            `yaml:"traefik"`
 	Services map[string]ServiceDefinition `yaml:"services"`
 	Setup    SetupYAMLConfig              `yaml:"setup"`
 }
@@ -665,6 +702,120 @@ func (r *PathResolver) ResolveServicePort(service string, fallback int) int {
 		return def.Port
 	}
 	return fallback
+}
+
+func (r *PathResolver) GetDNSConfig() DnsYAMLConfig {
+	var cfg DnsYAMLConfig
+	if r.parsedConfig != nil {
+		cfg = r.parsedConfig.DNS
+	}
+	cfg.DefaultIP = r.ResolveEnvOrConfig("LLMOBS_DNS_DEFAULT_IP", cfg.DefaultIP)
+	if cfg.DefaultIP == "" {
+		cfg.DefaultIP = "127.0.0.1"
+	}
+	cfg.HostsPath = r.ResolveEnvOrConfig("LLMOBS_HOSTS_PATH", cfg.HostsPath)
+	if cfg.HostsPath == "" {
+		cfg.HostsPath = "/etc/hosts"
+	}
+	cfg.Markers.Start = r.ResolveEnvOrConfig("LLMOBS_DNS_MARKER_START", cfg.Markers.Start)
+	if cfg.Markers.Start == "" {
+		cfg.Markers.Start = "# --- BEGIN LLMOBS PLATFORM DOMAINS ---"
+	}
+	cfg.Markers.End = r.ResolveEnvOrConfig("LLMOBS_DNS_MARKER_END", cfg.Markers.End)
+	if cfg.Markers.End == "" {
+		cfg.Markers.End = "# --- END LLMOBS PLATFORM DOMAINS ---"
+	}
+	if envDomains := r.ResolveEnvOrConfig("LLMOBS_DNS_DOMAINS", ""); envDomains != "" {
+		parts := strings.Split(envDomains, ",")
+		var cleaned []string
+		for _, p := range parts {
+			if trimmed := strings.TrimSpace(p); trimmed != "" {
+				cleaned = append(cleaned, trimmed)
+			}
+		}
+		if len(cleaned) > 0 {
+			cfg.Domains = cleaned
+		}
+	}
+	return cfg
+}
+
+func (r *PathResolver) GetDNSDomains() []string {
+	cfg := r.GetDNSConfig()
+	return cfg.Domains
+}
+
+func (r *PathResolver) GetDNSMarkers() (string, string) {
+	cfg := r.GetDNSConfig()
+	return cfg.Markers.Start, cfg.Markers.End
+}
+
+func (r *PathResolver) GetTraefikConfig() TraefikYAMLConfig {
+	var cfg TraefikYAMLConfig
+	if r.parsedConfig != nil {
+		cfg = r.parsedConfig.Traefik
+	}
+	cfg.API.DefaultURL = r.ResolveEnvOrConfig("TRAEFIK_API_URL", cfg.API.DefaultURL)
+	if cfg.API.DefaultURL == "" {
+		dashboardPort := r.ResolveEnvOrConfig("PORT_TRAEFIK_DASHBOARD", "31411")
+		cfg.API.DefaultURL = fmt.Sprintf("http://localhost:%s", dashboardPort)
+	}
+	cfg.API.Timeout = r.ResolveEnvOrConfig("TRAEFIK_API_TIMEOUT", cfg.API.Timeout)
+	if cfg.API.Timeout == "" {
+		cfg.API.Timeout = "10s"
+	}
+
+	ep := &cfg.API.Endpoints
+	ep.Ping = r.ResolveEnvOrConfig("TRAEFIK_EP_PING", ep.Ping)
+	if ep.Ping == "" {
+		ep.Ping = "/ping"
+	}
+	ep.Overview = r.ResolveEnvOrConfig("TRAEFIK_EP_OVERVIEW", ep.Overview)
+	if ep.Overview == "" {
+		ep.Overview = "/api/overview"
+	}
+	ep.RawData = r.ResolveEnvOrConfig("TRAEFIK_EP_RAWDATA", ep.RawData)
+	if ep.RawData == "" {
+		ep.RawData = "/api/rawdata"
+	}
+	ep.Entrypoints = r.ResolveEnvOrConfig("TRAEFIK_EP_ENTRYPOINTS", ep.Entrypoints)
+	if ep.Entrypoints == "" {
+		ep.Entrypoints = "/api/entrypoints"
+	}
+	ep.HTTPRouters = r.ResolveEnvOrConfig("TRAEFIK_EP_HTTP_ROUTERS", ep.HTTPRouters)
+	if ep.HTTPRouters == "" {
+		ep.HTTPRouters = "/api/http/routers"
+	}
+	ep.HTTPServices = r.ResolveEnvOrConfig("TRAEFIK_EP_HTTP_SERVICES", ep.HTTPServices)
+	if ep.HTTPServices == "" {
+		ep.HTTPServices = "/api/http/services"
+	}
+	ep.HTTPMiddlewares = r.ResolveEnvOrConfig("TRAEFIK_EP_HTTP_MIDDLEWARES", ep.HTTPMiddlewares)
+	if ep.HTTPMiddlewares == "" {
+		ep.HTTPMiddlewares = "/api/http/middlewares"
+	}
+	ep.TCPRouters = r.ResolveEnvOrConfig("TRAEFIK_EP_TCP_ROUTERS", ep.TCPRouters)
+	if ep.TCPRouters == "" {
+		ep.TCPRouters = "/api/tcp/routers"
+	}
+	ep.TCPServices = r.ResolveEnvOrConfig("TRAEFIK_EP_TCP_SERVICES", ep.TCPServices)
+	if ep.TCPServices == "" {
+		ep.TCPServices = "/api/tcp/services"
+	}
+	ep.TCPMiddlewares = r.ResolveEnvOrConfig("TRAEFIK_EP_TCP_MIDDLEWARES", ep.TCPMiddlewares)
+	if ep.TCPMiddlewares == "" {
+		ep.TCPMiddlewares = "/api/tcp/middlewares"
+	}
+	ep.UDPRouters = r.ResolveEnvOrConfig("TRAEFIK_EP_UDP_ROUTERS", ep.UDPRouters)
+	if ep.UDPRouters == "" {
+		ep.UDPRouters = "/api/udp/routers"
+	}
+	ep.UDPServices = r.ResolveEnvOrConfig("TRAEFIK_EP_UDP_SERVICES", ep.UDPServices)
+	if ep.UDPServices == "" {
+		ep.UDPServices = "/api/udp/services"
+	}
+
+	return cfg
 }
 
 func ResolveConfigDir(baseDir string) string {

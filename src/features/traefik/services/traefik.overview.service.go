@@ -22,7 +22,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/traefik/client"
-	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/traefik/endpoints"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/traefik/schema"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/traefik/types"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/infra/observability"
@@ -51,11 +50,12 @@ func (s *TraefikOverviewService) Ping(ctx context.Context, opts types.ClientOpti
 	defer span.End()
 
 	c := client.NewTraefikClient(opts, s.resolver)
+	traefikCfg := s.resolver.GetTraefikConfig()
 	start := time.Now()
 
-	status, err := c.Do(ctx, http.MethodGet, endpoints.EndpointPing, nil, nil)
+	status, err := c.Do(ctx, http.MethodGet, traefikCfg.API.Endpoints.Ping, nil, nil)
 	if err != nil || status != http.StatusOK {
-		status, err = c.Do(ctx, http.MethodGet, endpoints.EndpointOverview, nil, nil)
+		status, err = c.Do(ctx, http.MethodGet, traefikCfg.API.Endpoints.Overview, nil, nil)
 	}
 	latency := float64(time.Since(start).Microseconds()) / 1000.0
 
@@ -90,9 +90,10 @@ func (s *TraefikOverviewService) GetOverview(ctx context.Context, opts types.Cli
 	defer span.End()
 
 	c := client.NewTraefikClient(opts, s.resolver)
+	traefikCfg := s.resolver.GetTraefikConfig()
 	var overview schema.OverviewReport
 
-	_, err := c.Do(ctx, http.MethodGet, endpoints.EndpointOverview, nil, &overview)
+	_, err := c.Do(ctx, http.MethodGet, traefikCfg.API.Endpoints.Overview, nil, &overview)
 	if err == nil {
 		observability.SetAttributes(ctx, map[string]interface{}{
 			"http.routers.total": overview.HTTP.Routers.Total,
@@ -141,9 +142,10 @@ func (s *TraefikOverviewService) ListEntryPoints(ctx context.Context, opts types
 	defer span.End()
 
 	c := client.NewTraefikClient(opts, s.resolver)
+	traefikCfg := s.resolver.GetTraefikConfig()
 	var rawEntryPoints []schema.EntryPointInfo
 
-	_, err := c.Do(ctx, http.MethodGet, endpoints.EndpointEntryPoints, nil, &rawEntryPoints)
+	_, err := c.Do(ctx, http.MethodGet, traefikCfg.API.Endpoints.Entrypoints, nil, &rawEntryPoints)
 	if err != nil {
 		observability.RecordError(ctx, err)
 		return nil, err

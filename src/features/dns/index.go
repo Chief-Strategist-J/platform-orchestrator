@@ -20,9 +20,10 @@ type DNSModule struct {
 }
 
 func NewDNSModule(tracer ports.TracerPort, baseDir string) *DNSModule {
+	resolver := paths.NewPathResolver(baseDir)
 	return &DNSModule{
 		Service:      services.NewDNSService(tracer, baseDir),
-		HostsService: services.NewDNSHostsService(tracer),
+		HostsService: services.NewDNSHostsService(tracer, resolver),
 		ProbeService: services.NewDNSProbeService(tracer),
 	}
 }

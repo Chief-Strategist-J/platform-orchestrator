@@ -21,7 +21,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/traefik/client"
-	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/traefik/endpoints"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/traefik/rules"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/traefik/schema"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/traefik/types"
@@ -41,27 +40,35 @@ type TraefikRouterService struct {
 }
 
 func NewTraefikRouterService(tracer ports.TracerPort, baseDir string) *TraefikRouterService {
+	resolver := paths.NewPathResolver(baseDir)
+	traefikCfg := resolver.GetTraefikConfig()
 	return &TraefikRouterService{
 		tracer:   tracer,
 		baseDir:  baseDir,
-		resolver: paths.NewPathResolver(baseDir),
+		resolver: resolver,
 		httpRouterDesc: ResourceDescriptor[schema.HTTPRouterDefinition]{
 			ResourceName:       "HTTP Router",
-			CollectionEndpoint: endpoints.EndpointHTTPRouters,
-			ItemEndpointFunc:   endpoints.BuildHTTPRouterPath,
-			SpanPrefix:         "traefik.http_routers",
+			CollectionEndpoint: traefikCfg.API.Endpoints.HTTPRouters,
+			ItemEndpointFunc: func(name string) string {
+				return fmt.Sprintf("%s/%s", traefikCfg.API.Endpoints.HTTPRouters, name)
+			},
+			SpanPrefix: "traefik.http_routers",
 		},
 		tcpRouterDesc: ResourceDescriptor[schema.TCPRouterDefinition]{
 			ResourceName:       "TCP Router",
-			CollectionEndpoint: endpoints.EndpointTCPRouters,
-			ItemEndpointFunc:   endpoints.BuildTCPRouterPath,
-			SpanPrefix:         "traefik.tcp_routers",
+			CollectionEndpoint: traefikCfg.API.Endpoints.TCPRouters,
+			ItemEndpointFunc: func(name string) string {
+				return fmt.Sprintf("%s/%s", traefikCfg.API.Endpoints.TCPRouters, name)
+			},
+			SpanPrefix: "traefik.tcp_routers",
 		},
 		serviceDesc: ResourceDescriptor[schema.ServiceDefinition]{
 			ResourceName:       "HTTP Service",
-			CollectionEndpoint: endpoints.EndpointHTTPServices,
-			ItemEndpointFunc:   endpoints.BuildHTTPServicePath,
-			SpanPrefix:         "traefik.http_services",
+			CollectionEndpoint: traefikCfg.API.Endpoints.HTTPServices,
+			ItemEndpointFunc: func(name string) string {
+				return fmt.Sprintf("%s/%s", traefikCfg.API.Endpoints.HTTPServices, name)
+			},
+			SpanPrefix: "traefik.http_services",
 		},
 	}
 }

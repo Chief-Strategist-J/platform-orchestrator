@@ -35,17 +35,6 @@ var (
 	hostRuleAltRegex = regexp.MustCompile(`(?:Host|HostSNI)\s*\(\s*"([^"]+)"\s*\)`)
 )
 
-var defaultPlatformDomains = []string{
-	"traefik.internal.local",
-	"grafana.internal.local",
-	"prometheus.internal.local",
-	"alertmanager.internal.local",
-	"tempo.internal.local",
-	"loki.internal.local",
-	"jaeger.internal.local",
-	"postgres.internal.local",
-}
-
 type DNSService struct {
 	tracer       ports.TracerPort
 	baseDir      string
@@ -55,11 +44,12 @@ type DNSService struct {
 }
 
 func NewDNSService(tracer ports.TracerPort, baseDir string) *DNSService {
+	resolver := paths.NewPathResolver(baseDir)
 	return &DNSService{
 		tracer:       tracer,
 		baseDir:      baseDir,
-		resolver:     paths.NewPathResolver(baseDir),
-		hostsService: NewDNSHostsService(tracer),
+		resolver:     resolver,
+		hostsService: NewDNSHostsService(tracer, resolver),
 		probeService: NewDNSProbeService(tracer),
 	}
 }
@@ -73,7 +63,7 @@ func (s *DNSService) DiscoverDomains(ctx context.Context) []string {
 	seen := make(map[string]bool)
 	var discovered []string
 
-	for _, d := range defaultPlatformDomains {
+	for _, d := range s.resolver.GetDNSDomains() {
 		norm := rules.NormalizeDomain(d)
 		if norm != "" && !seen[norm] {
 			seen[norm] = true
@@ -140,12 +130,17 @@ func (s *DNSService) ListRecords(ctx context.Context, hostsPath string) ([]schem
 		syncedMap = make(map[string]string)
 	}
 
+	defaultIP := s.resolver.GetDNSConfig().DefaultIP
+	if defaultIP == "" {
+		defaultIP = "127.0.0.1"
+	}
+
 	records := make([]schema.DnsRecord, 0, len(discovered))
 	for _, domain := range discovered {
 		ip, synced := syncedMap[domain]
 		targetIP := ip
 		if !synced {
-			targetIP = "127.0.0.1"
+			targetIP = defaultIP
 		}
 		records = append(records, schema.DnsRecord{
 			Domain:   domain,
