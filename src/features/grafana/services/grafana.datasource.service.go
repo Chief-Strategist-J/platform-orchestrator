@@ -1,11 +1,11 @@
 /*
-Package services provides isolated, domain-specific services for Grafana lifecycle management.
+Package services provides isolated, domain-specific services for Grafana lifecycle management with deep OpenTelemetry tracing.
 
 ALGORITHM BLUEPRINT (DatasourceService):
-1. Declarative Resource Descriptor: Configures Datasource endpoints and validation rules as a data descriptor.
+1. Declarative Resource Descriptor: Configures Datasource endpoints, OTel span prefixes, and validation rules as a data descriptor.
 2. Declarative Template Registry: Resolves built-in and dynamic datasources from the declarative template data table.
-3. Batch Sync Pipeline: Concurrently provisions platform datasources with health probing.
-4. OpenTelemetry Tracing: Wraps every public operation in an attributed span.
+3. Batch Sync Pipeline: Concurrently provisions platform datasources with health probing and span tracking.
+4. Deep Observability: Wraps every public operation in an attributed span with lifecycle event annotations.
 5. Invariants:
    - Zero inline comments inside function bodies.
    - Non-200 responses return descriptive error envelopes.
@@ -25,6 +25,7 @@ import (
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/rules"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/schema"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/types"
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/infra/observability"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/ports"
 )
@@ -59,8 +60,10 @@ func (s *DatasourceService) List(ctx context.Context, opts types.ClientOptions) 
 }
 
 func (s *DatasourceService) Get(ctx context.Context, opts types.ClientOptions, idOrNameOrUID string) (*schema.DatasourcePayload, error) {
-	ctx, endSpan := s.tracer.StartSpan(ctx, "grafana.datasources.get")
-	defer endSpan()
+	ctx, span := s.tracer.StartSpanWithAttributes(ctx, "grafana.datasources.get", map[string]interface{}{
+		"datasource.query": idOrNameOrUID,
+	})
+	defer span.End()
 
 	c := client.NewGrafanaClient(opts, s.resolver)
 	var ds schema.DatasourcePayload
@@ -68,22 +71,41 @@ func (s *DatasourceService) Get(ctx context.Context, opts types.ClientOptions, i
 	uidPath := endpoints.BuildDatasourceUIDPath(idOrNameOrUID)
 	status, err := c.Do(ctx, http.MethodGet, uidPath, nil, &ds)
 	if err == nil && status == http.StatusOK {
+		observability.SetAttributes(ctx, map[string]interface{}{
+			"datasource.uid":  ds.UID,
+			"datasource.name": ds.Name,
+			"datasource.type": ds.Type,
+		})
 		return &ds, nil
 	}
 
 	namePath := endpoints.BuildDatasourceNamePath(idOrNameOrUID)
 	status, err = c.Do(ctx, http.MethodGet, namePath, nil, &ds)
 	if err == nil && status == http.StatusOK {
+		observability.SetAttributes(ctx, map[string]interface{}{
+			"datasource.uid":  ds.UID,
+			"datasource.name": ds.Name,
+			"datasource.type": ds.Type,
+		})
 		return &ds, nil
 	}
 
-	return nil, fmt.Errorf("datasource %q not found in Grafana", idOrNameOrUID)
+	notFoundErr := fmt.Errorf("datasource %q not found in Grafana", idOrNameOrUID)
+	observability.RecordError(ctx, notFoundErr)
+	return nil, notFoundErr
 }
 
 func (s *DatasourceService) Create(ctx context.Context, opts types.ClientOptions, payload schema.DatasourcePayload) (*schema.SingleDatasourceResult, error) {
+	ctx, span := s.tracer.StartSpanWithAttributes(ctx, "grafana.datasources.create", map[string]interface{}{
+		"datasource.name": payload.Name,
+		"datasource.type": payload.Type,
+	})
+	defer span.End()
+
 	c := client.NewGrafanaClient(opts, s.resolver)
 	res, err := ExecuteUpsert(ctx, c, s.tracer, s.dsDesc, "", payload)
 	if err != nil {
+		observability.RecordError(ctx, err)
 		return &schema.SingleDatasourceResult{
 			Service:        payload.Type,
 			DatasourceName: payload.Name,
@@ -105,9 +127,17 @@ func (s *DatasourceService) Create(ctx context.Context, opts types.ClientOptions
 }
 
 func (s *DatasourceService) Update(ctx context.Context, opts types.ClientOptions, idOrUID string, payload schema.DatasourcePayload) (*schema.SingleDatasourceResult, error) {
+	ctx, span := s.tracer.StartSpanWithAttributes(ctx, "grafana.datasources.update", map[string]interface{}{
+		"datasource.uid":  idOrUID,
+		"datasource.name": payload.Name,
+		"datasource.type": payload.Type,
+	})
+	defer span.End()
+
 	c := client.NewGrafanaClient(opts, s.resolver)
 	res, err := ExecuteUpsert(ctx, c, s.tracer, s.dsDesc, idOrUID, payload)
 	if err != nil {
+		observability.RecordError(ctx, err)
 		return &schema.SingleDatasourceResult{
 			Service:        payload.Type,
 			DatasourceName: payload.Name,
@@ -130,9 +160,15 @@ func (s *DatasourceService) Update(ctx context.Context, opts types.ClientOptions
 }
 
 func (s *DatasourceService) Delete(ctx context.Context, opts types.ClientOptions, idOrUIDOrName string) (*types.DeleteDatasourceResult, error) {
+	ctx, span := s.tracer.StartSpanWithAttributes(ctx, "grafana.datasources.delete", map[string]interface{}{
+		"datasource.target": idOrUIDOrName,
+	})
+	defer span.End()
+
 	c := client.NewGrafanaClient(opts, s.resolver)
 	res, err := ExecuteDelete(ctx, c, s.tracer, s.dsDesc, idOrUIDOrName)
 	if err != nil {
+		observability.RecordError(ctx, err)
 		return &types.DeleteDatasourceResult{
 			UID:     idOrUIDOrName,
 			Message: res.Message,
@@ -147,14 +183,17 @@ func (s *DatasourceService) Delete(ctx context.Context, opts types.ClientOptions
 }
 
 func (s *DatasourceService) TestHealth(ctx context.Context, opts types.ClientOptions, idOrUIDOrName string) (*types.DatasourceHealthResult, error) {
-	ctx, endSpan := s.tracer.StartSpan(ctx, "grafana.datasources.health_test")
-	defer endSpan()
+	ctx, span := s.tracer.StartSpanWithAttributes(ctx, "grafana.datasources.health_test", map[string]interface{}{
+		"datasource.target": idOrUIDOrName,
+	})
+	defer span.End()
 
 	c := client.NewGrafanaClient(opts, s.resolver)
 	start := time.Now()
 
 	ds, err := s.Get(ctx, opts, idOrUIDOrName)
 	if err != nil {
+		observability.RecordError(ctx, err)
 		return &types.DatasourceHealthResult{
 			UID:       idOrUIDOrName,
 			Status:    "error",
@@ -174,6 +213,7 @@ func (s *DatasourceService) TestHealth(ctx context.Context, opts types.ClientOpt
 	latency := float64(time.Since(start).Microseconds()) / 1000.0
 
 	if err != nil {
+		observability.RecordError(ctx, err)
 		return &types.DatasourceHealthResult{
 			UID:       ds.UID,
 			Name:      ds.Name,
@@ -185,6 +225,11 @@ func (s *DatasourceService) TestHealth(ctx context.Context, opts types.ClientOpt
 	}
 
 	isHealthy := strings.EqualFold(healthResp.Status, "success") || strings.EqualFold(healthResp.Status, "ok")
+	observability.SetAttributes(ctx, map[string]interface{}{
+		"datasource.healthy": isHealthy,
+		"datasource.latency": latency,
+	})
+
 	return &types.DatasourceHealthResult{
 		UID:       ds.UID,
 		Name:      ds.Name,
@@ -196,13 +241,16 @@ func (s *DatasourceService) TestHealth(ctx context.Context, opts types.ClientOpt
 }
 
 func (s *DatasourceService) Sync(ctx context.Context, opts schema.DatasourceSyncOptions) (*schema.DatasourceSyncReport, error) {
-	ctx, endSpan := s.tracer.StartSpan(ctx, "grafana.datasources.sync")
-	defer endSpan()
+	ctx, span := s.tracer.StartSpanWithAttributes(ctx, "grafana.datasources.sync", map[string]interface{}{
+		"sync.test_connection": opts.TestConnection,
+	})
+	defer span.End()
 
 	servicesToSync := opts.Services
 	if len(servicesToSync) == 0 {
 		servicesToSync = []string{"alloydb", "clickhouse", "redis", "tempo"}
 	}
+	observability.SetAttribute(ctx, "sync.services_count", len(servicesToSync))
 
 	clientOpts := types.ClientOptions{
 		GrafanaURL: opts.GrafanaURL,
@@ -243,6 +291,15 @@ func (s *DatasourceService) Sync(ctx context.Context, opts schema.DatasourceSync
 			successCount++
 		}
 	}
+
+	observability.SetAttributes(ctx, map[string]interface{}{
+		"sync.total_count":   len(results),
+		"sync.success_count": successCount,
+	})
+	observability.AddEvent(ctx, "grafana.sync_completed", map[string]interface{}{
+		"total":   len(results),
+		"success": successCount,
+	})
 
 	return &schema.DatasourceSyncReport{
 		TotalCount:   len(results),

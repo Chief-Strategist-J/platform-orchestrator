@@ -1,10 +1,10 @@
 /*
-Package services provides isolated, domain-specific services for Grafana lifecycle management.
+Package services provides isolated, domain-specific services for Grafana lifecycle management with deep OpenTelemetry tracing.
 
 ALGORITHM BLUEPRINT (AlertService):
-1. Declarative Resource Descriptors: Configures AlertRule and ContactPoint endpoints and rules as data descriptors.
-2. Generic Execution: Delegates List, Get, Delete, and Upsert operations to ResourceExecutor.
-3. Notification Testing: Dispatches synthetic alert notifications to verify contact point connectivity.
+1. Declarative Resource Descriptors: Configures AlertRule and ContactPoint endpoints, OTel span prefixes, and rules as data descriptors.
+2. Generic Execution: Delegates List, Get, Delete, and Upsert operations to ResourceExecutor with distributed trace context.
+3. Notification Testing: Dispatches synthetic alert notifications to verify contact point connectivity, tracking latency and delivery spans.
 4. Invariants:
    - Zero inline comments inside function bodies.
    - Non-200 responses return descriptive error envelopes.
@@ -22,16 +22,17 @@ import (
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/rules"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/schema"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/types"
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/infra/observability"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/ports"
 )
 
 type AlertService struct {
-	tracer             ports.TracerPort
-	baseDir            string
-	resolver           *paths.PathResolver
-	alertRuleDesc      ResourceDescriptor[schema.AlertRulePayload]
-	contactPointDesc   ResourceDescriptor[schema.ContactPointPayload]
+	tracer           ports.TracerPort
+	baseDir          string
+	resolver         *paths.PathResolver
+	alertRuleDesc    ResourceDescriptor[schema.AlertRulePayload]
+	contactPointDesc ResourceDescriptor[schema.ContactPointPayload]
 }
 
 func NewAlertService(tracer ports.TracerPort, baseDir string) *AlertService {
@@ -67,6 +68,13 @@ func (s *AlertService) GetAlertRule(ctx context.Context, opts types.ClientOption
 }
 
 func (s *AlertService) CreateOrUpdateAlertRule(ctx context.Context, opts types.ClientOptions, rule schema.AlertRulePayload) (*types.AlertOperationResult, error) {
+	ctx, span := s.tracer.StartSpanWithAttributes(ctx, "grafana.alerts.save", map[string]interface{}{
+		"alert.title":      rule.Title,
+		"alert.rule_group": rule.RuleGroup,
+		"alert.folder_uid": rule.FolderUID,
+	})
+	defer span.End()
+
 	if rule.FolderUID != "" {
 		_ = s.EnsureFolderExists(ctx, opts, rule.FolderUID)
 	}
@@ -85,6 +93,12 @@ func (s *AlertService) ListContactPoints(ctx context.Context, opts types.ClientO
 }
 
 func (s *AlertService) CreateOrUpdateContactPoint(ctx context.Context, opts types.ClientOptions, cp schema.ContactPointPayload) (*types.AlertOperationResult, error) {
+	ctx, span := s.tracer.StartSpanWithAttributes(ctx, "grafana.contact_points.save", map[string]interface{}{
+		"contact_point.name": cp.Name,
+		"contact_point.type": cp.Type,
+	})
+	defer span.End()
+
 	c := client.NewGrafanaClient(opts, s.resolver)
 
 	if cp.UID == "" {
@@ -107,8 +121,11 @@ func (s *AlertService) DeleteContactPoint(ctx context.Context, opts types.Client
 }
 
 func (s *AlertService) TestContactPoint(ctx context.Context, opts types.ClientOptions, cp schema.ContactPointPayload) (*types.AlertOperationResult, error) {
-	ctx, endSpan := s.tracer.StartSpan(ctx, "grafana.contact_points.test")
-	defer endSpan()
+	ctx, span := s.tracer.StartSpanWithAttributes(ctx, "grafana.contact_points.test", map[string]interface{}{
+		"contact_point.name": cp.Name,
+		"contact_point.type": cp.Type,
+	})
+	defer span.End()
 
 	normalized := rules.ContactPointRules.Normalize(cp)
 	c := client.NewGrafanaClient(opts, s.resolver)
@@ -141,6 +158,7 @@ func (s *AlertService) TestContactPoint(ctx context.Context, opts types.ClientOp
 	latency := float64(time.Since(start).Microseconds()) / 1000.0
 
 	if err != nil {
+		observability.RecordError(ctx, err)
 		return &types.AlertOperationResult{
 			Title:     normalized.Name,
 			Status:    "failed",
@@ -149,6 +167,14 @@ func (s *AlertService) TestContactPoint(ctx context.Context, opts types.ClientOp
 			LatencyMs: latency,
 		}, err
 	}
+
+	observability.SetAttributes(ctx, map[string]interface{}{
+		"test.status":     "success",
+		"test.latency_ms": latency,
+	})
+	observability.AddEvent(ctx, "grafana.contact_point_tested", map[string]interface{}{
+		"name": normalized.Name,
+	})
 
 	return &types.AlertOperationResult{
 		Title:     normalized.Name,
@@ -160,6 +186,11 @@ func (s *AlertService) TestContactPoint(ctx context.Context, opts types.ClientOp
 }
 
 func (s *AlertService) EnsureFolderExists(ctx context.Context, opts types.ClientOptions, folderUID string) error {
+	ctx, span := s.tracer.StartSpanWithAttributes(ctx, "grafana.folders.ensure", map[string]interface{}{
+		"folder.uid": folderUID,
+	})
+	defer span.End()
+
 	c := client.NewGrafanaClient(opts, s.resolver)
 	targetPath := fmt.Sprintf("%s/%s", endpoints.EndpointFolders, folderUID)
 
@@ -178,5 +209,8 @@ func (s *AlertService) EnsureFolderExists(ctx context.Context, opts types.Client
 	}
 
 	_, err = c.Do(ctx, http.MethodPost, endpoints.EndpointFolders, folderPayload, nil)
+	if err != nil {
+		observability.RecordError(ctx, err)
+	}
 	return err
 }

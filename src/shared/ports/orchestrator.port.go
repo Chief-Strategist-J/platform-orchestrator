@@ -90,7 +90,19 @@ type HealthPort interface {
 	ProbeAll(ctx context.Context, targets []HealthProbeTarget) ([]HealthProbeResult, bool)
 }
 
+type Span interface {
+	End()
+	SetAttribute(key string, value interface{})
+	SetAttributes(attrs map[string]interface{})
+	AddEvent(name string, attrs map[string]interface{})
+	RecordError(err error)
+	TraceID() string
+	SpanID() string
+}
+
 type TracerPort interface {
 	StartSpan(ctx context.Context, operationName string) (context.Context, func())
+	StartSpanWithAttributes(ctx context.Context, operationName string, attrs map[string]interface{}) (context.Context, Span)
 	InjectTraceContext(ctx context.Context) string
+	ExtractTraceContext(ctx context.Context, traceparent string) context.Context
 }
