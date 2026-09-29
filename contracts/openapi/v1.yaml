@@ -305,19 +305,470 @@ paths:
               schema:
                 $ref: '#/components/schemas/PortsStatusResponse'
 
-  /ports/free:
-    post:
-      summary: Free and Terminate Conflicting Socket Listeners
-      operationId: freeConflictingPorts
+  /grafana/datasources:
+    get:
+      summary: List Configured Grafana Datasources
+      operationId: listDatasources
       responses:
         '200':
-          description: Conflicting socket listeners freed
+          description: List of datasources returned successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PortsFreeResponse'
+                $ref: '#/components/schemas/DatasourcesListResponse'
         '500':
           $ref: '#/components/responses/StandardErrorResponse'
+    post:
+      summary: Create a New Grafana Datasource
+      operationId: createDatasource
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DatasourcePayload'
+      responses:
+        '200':
+          description: Datasource created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SingleDatasourceResponse'
+        '400':
+          $ref: '#/components/responses/StandardErrorResponse'
+
+  /grafana/datasources/sync:
+    post:
+      summary: Batch Sync Platform Datasources to Grafana
+      operationId: syncDatasources
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DatasourceSyncOptions'
+      responses:
+        '200':
+          description: Datasource synchronization report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasourceSyncReportResponse'
+
+  /grafana/datasources/{id}:
+    get:
+      summary: Get Datasource by ID, UID, or Name
+      operationId: getDatasource
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Datasource details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasourceDetailResponse'
+        '404':
+          $ref: '#/components/responses/StandardErrorResponse'
+    put:
+      summary: Update Existing Datasource by UID
+      operationId: updateDatasource
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DatasourcePayload'
+      responses:
+        '200':
+          description: Datasource updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SingleDatasourceResponse'
+    delete:
+      summary: Delete Datasource by UID or Name
+      operationId: deleteDatasource
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Datasource deletion status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertOperationResponse'
+
+  /grafana/datasources/{id}/health:
+    get:
+      summary: Test Datasource Connectivity and Health
+      operationId: testDatasourceHealth
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Datasource health diagnostic result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasourceHealthResponse'
+
+  /grafana/dashboards:
+    get:
+      summary: Search Grafana Dashboards
+      operationId: searchDashboards
+      parameters:
+        - name: query
+          in: query
+          schema:
+            type: string
+        - name: folderUids
+          in: query
+          schema:
+            type: string
+        - name: tag
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Matching dashboards list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardsSearchResponse'
+    post:
+      summary: Create or Update Dashboard via DB Payload
+      operationId: saveDashboard
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DashboardPayload'
+      responses:
+        '200':
+          description: Dashboard save result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardSaveResponse'
+
+  /grafana/dashboards/import:
+    post:
+      summary: Import Dashboard from File or Remote URL
+      operationId: importDashboard
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DashboardImportOptions'
+      responses:
+        '200':
+          description: Dashboard imported successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardSaveResponse'
+
+  /grafana/dashboards/{uid}:
+    get:
+      summary: Get Full Dashboard Model by UID
+      operationId: getDashboard
+      parameters:
+        - name: uid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Full dashboard definition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardDetailResponse'
+    delete:
+      summary: Delete Dashboard by UID
+      operationId: deleteDashboard
+      parameters:
+        - name: uid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Dashboard deletion status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardDeleteResponse'
+
+  /grafana/alerts:
+    get:
+      summary: List Grafana Alert Rules
+      operationId: listAlertRules
+      responses:
+        '200':
+          description: Configured alert rules
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertRulesListResponse'
+    post:
+      summary: Create or Update Grafana Alert Rule
+      operationId: saveAlertRule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertRulePayload'
+      responses:
+        '200':
+          description: Alert rule operation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertOperationResponse'
+
+  /grafana/alerts/{uid}:
+    get:
+      summary: Get Alert Rule by UID
+      operationId: getAlertRule
+      parameters:
+        - name: uid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Alert rule details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertRuleDetailResponse'
+    delete:
+      summary: Delete Alert Rule by UID
+      operationId: deleteAlertRule
+      parameters:
+        - name: uid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Alert rule deletion status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertOperationResponse'
+
+  /grafana/contact-points:
+    get:
+      summary: List Grafana Alerting Contact Points
+      operationId: listContactPoints
+      responses:
+        '200':
+          description: Contact points list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactPointsListResponse'
+    post:
+      summary: Create or Update Contact Point
+      operationId: saveContactPoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContactPointPayload'
+      responses:
+        '200':
+          description: Contact point save result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertOperationResponse'
+
+  /grafana/contact-points/test:
+    post:
+      summary: Test Alert Notification Dispatch to Contact Point
+      operationId: testContactPoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContactPointPayload'
+      responses:
+        '200':
+          description: Test notification result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertOperationResponse'
+
+  /grafana/contact-points/{uid}:
+    delete:
+      summary: Delete Contact Point by UID
+      operationId: deleteContactPoint
+      parameters:
+        - name: uid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Contact point deletion status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertOperationResponse'
+
+  /services:
+    get:
+      summary: List Registered External Data Services
+      operationId: listExternalServices
+      responses:
+        '200':
+          description: External services list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServicesListResponse'
+    post:
+      summary: Register New External Data Service
+      operationId: registerExternalService
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceDefinition'
+      responses:
+        '200':
+          description: Service successfully registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceDetailResponse'
+
+  /services/{id}:
+    get:
+      summary: Get Service Definition by ID
+      operationId: getExternalService
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Service definition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceDetailResponse'
+    put:
+      summary: Update Service Definition by ID
+      operationId: updateExternalService
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceDefinition'
+      responses:
+        '200':
+          description: Updated service definition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceDetailResponse'
+    delete:
+      summary: Delete Service by ID
+      operationId: deleteExternalService
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Service deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceActionResponse'
+
+  /services/{id}/health:
+    get:
+      summary: Test Service Health
+      operationId: testServiceHealth
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Service probe health status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceHealthResponse'
+
+  /services/{id}/sync-to-grafana:
+    post:
+      summary: Provision Service Connection Directly to Grafana Datasources
+      operationId: syncServiceToGrafana
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Grafana datasource synchronization result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SingleDatasourceResponse'
 
 components:
   responses:
@@ -774,4 +1225,501 @@ components:
             freed:
               type: boolean
             message:
+              type: string
+
+    DatasourcePayload:
+      type: object
+      required:
+        - name
+        - type
+        - url
+      properties:
+        id:
+          type: integer
+        uid:
+          type: string
+          example: alloydb-primary
+        name:
+          type: string
+          example: AlloyDB (PostgreSQL)
+        type:
+          type: string
+          example: postgres
+        typeLogoUrl:
+          type: string
+        access:
+          type: string
+          default: proxy
+        url:
+          type: string
+          example: http://alloydb:5432
+        password:
+          type: string
+        user:
+          type: string
+        database:
+          type: string
+        basicAuth:
+          type: boolean
+        isDefault:
+          type: boolean
+        jsonData:
+          type: object
+        secureJsonData:
+          type: object
+
+    DatasourcesListResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/DatasourcePayload'
+
+    SingleDatasourceResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            service:
+              type: string
+            datasourceName:
+              type: string
+            datasourceUid:
+              type: string
+            status:
+              type: string
+            message:
+              type: string
+            latencyMs:
+              type: number
+            isHealthy:
+              type: boolean
+
+    DatasourceDetailResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          $ref: '#/components/schemas/DatasourcePayload'
+
+    DatasourceSyncOptions:
+      type: object
+      properties:
+        grafanaUrl:
+          type: string
+        grafanaUser:
+          type: string
+        grafanaPass:
+          type: string
+        services:
+          type: array
+          items:
+            type: string
+        testConnection:
+          type: boolean
+          default: true
+        timeout:
+          type: integer
+
+    DatasourceSyncReportResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            totalCount:
+              type: integer
+            successCount:
+              type: integer
+            results:
+              type: array
+              items:
+                type: object
+            reportedAt:
+              type: string
+
+    DatasourceHealthResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            uid:
+              type: string
+            name:
+              type: string
+            status:
+              type: string
+            message:
+              type: string
+            latencyMs:
+              type: number
+            isHealthy:
+              type: boolean
+
+    DashboardPayload:
+      type: object
+      required:
+        - dashboard
+      properties:
+        dashboard:
+          type: object
+        folderId:
+          type: integer
+        folderUid:
+          type: string
+        message:
+          type: string
+        overwrite:
+          type: boolean
+          default: true
+
+    DashboardImportOptions:
+      type: object
+      required:
+        - sourcePathOrUrl
+      properties:
+        sourcePathOrUrl:
+          type: string
+        folderUid:
+          type: string
+        overwrite:
+          type: boolean
+          default: true
+        titleOverride:
+          type: string
+
+    DashboardDetailResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            meta:
+              type: object
+            dashboard:
+              type: object
+
+    DashboardsSearchResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              uid:
+                type: string
+              title:
+                type: string
+              uri:
+                type: string
+              url:
+                type: string
+              slug:
+                type: string
+              type:
+                type: string
+              tags:
+                type: array
+                items:
+                  type: string
+              isStarred:
+                type: boolean
+              folderId:
+                type: integer
+              folderUid:
+                type: string
+              folderTitle:
+                type: string
+
+    DashboardSaveResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            id:
+              type: integer
+            uid:
+              type: string
+            url:
+              type: string
+            status:
+              type: string
+            version:
+              type: integer
+            latency:
+              type: number
+
+    DashboardDeleteResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            title:
+              type: string
+            message:
+              type: string
+            success:
+              type: boolean
+
+    AlertRulePayload:
+      type: object
+      required:
+        - title
+        - ruleGroup
+        - data
+      properties:
+        id:
+          type: integer
+        uid:
+          type: string
+        orgId:
+          type: integer
+        folderUid:
+          type: string
+        ruleGroup:
+          type: string
+        title:
+          type: string
+        condition:
+          type: string
+        data:
+          type: array
+          items:
+            type: object
+        for:
+          type: string
+        annotations:
+          type: object
+        labels:
+          type: object
+        isPaused:
+          type: boolean
+
+    AlertRulesListResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlertRulePayload'
+
+    AlertRuleDetailResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          $ref: '#/components/schemas/AlertRulePayload'
+
+    ContactPointPayload:
+      type: object
+      required:
+        - name
+        - type
+      properties:
+        uid:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        settings:
+          type: object
+        disableResolveMessage:
+          type: boolean
+        provenance:
+          type: string
+
+    ContactPointsListResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContactPointPayload'
+
+    AlertOperationResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            uid:
+              type: string
+            title:
+              type: string
+            status:
+              type: string
+            message:
+              type: string
+            success:
+              type: boolean
+            latencyMs:
+              type: number
+
+    ServiceDefinition:
+      type: object
+      required:
+        - name
+        - serviceType
+        - host
+        - port
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        serviceType:
+          type: string
+        host:
+          type: string
+        port:
+          type: integer
+        user:
+          type: string
+        password:
+          type: string
+        database:
+          type: string
+        useSsl:
+          type: boolean
+        tags:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+
+    ServicesListResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceDefinition'
+
+    ServiceDetailResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          $ref: '#/components/schemas/ServiceDefinition'
+
+    ServiceActionResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            success:
+              type: boolean
+            message:
+              type: string
+
+    ServiceHealthResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            serviceId:
+              type: string
+            name:
+              type: string
+            status:
+              type: string
+            isHealthy:
+              type: boolean
+            latencyMs:
+              type: number
+            error:
               type: string
