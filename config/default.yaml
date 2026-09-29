@@ -81,9 +81,9 @@ services:
     port: 3100
     envUrl: "LOKI_URL"
   traefik:
-    url: "http://localhost:8080"
-    port: 8080
-    envUrl: "TRAEFIK_URL"
+    url: "http://localhost:31411"
+    port: 31411
+    envUrl: "TRAEFIK_API_URL"
   kafka:
     host: "llmobs-kafka"
     port: 9092

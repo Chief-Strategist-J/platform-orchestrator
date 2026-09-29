@@ -49,7 +49,7 @@ func NewTraefikCommand(svc *traefikService.TraefikService) *cobra.Command {
 		Short:   "Inspect, configure, and manage Traefik Ingress Gateway and dynamic routes",
 	}
 
-	rootCmd.PersistentFlags().StringVar(&traefikURL, "url", "", "Traefik management API URL (default: http://localhost:8080)")
+	rootCmd.PersistentFlags().StringVar(&traefikURL, "url", "", "Traefik management API URL (default: http://localhost:31411)")
 	rootCmd.PersistentFlags().IntVar(&timeoutSec, "timeout", 10, "HTTP timeout in seconds")
 
 	pingCmd := &cobra.Command{

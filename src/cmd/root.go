@@ -49,6 +49,7 @@ import (
 	cloudflareService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/cloudflare/services"
 	configSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/config/schema"
 	configService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/config/services"
+	dnsService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/dns/services"
 	gdprSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/gdpr/schema"
 	gdprService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/gdpr/services"
 	grafanaService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/services"
@@ -151,6 +152,7 @@ func Execute() {
 	grafanaSvc := grafanaService.NewGrafanaService(tracer, workspaceRoot)
 	servicesSvc := servicesService.NewServicesService(tracer, workspaceRoot)
 	traefikSvc := traefikService.NewTraefikService(tracer, workspaceRoot)
+	dnsSvc := dnsService.NewDNSService(tracer, workspaceRoot)
 
 	restHandler := rest.NewOrchestratorHandler(
 		stackSvc,
@@ -167,6 +169,7 @@ func Execute() {
 		grafanaSvc,
 		servicesSvc,
 		traefikSvc,
+		dnsSvc,
 		workspaceRoot,
 	)
 
@@ -592,6 +595,7 @@ Examples:
 	alertCmd := NewAlertCommand(grafanaSvc)
 	serviceCmd := NewServiceCommand(servicesSvc, grafanaSvc)
 	traefikCmd := NewTraefikCommand(traefikSvc)
+	dnsCmd := NewDNSCommand(dnsSvc)
 
 
 	certsCmd := &cobra.Command{
@@ -979,6 +983,7 @@ Examples:
 		alertCmd,
 		serviceCmd,
 		traefikCmd,
+		dnsCmd,
 	)
 
 	if err := rootCmd.Execute(); err != nil {

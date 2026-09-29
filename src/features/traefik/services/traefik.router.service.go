@@ -371,6 +371,21 @@ func (s *TraefikRouterService) DeleteTCPRouter(ctx context.Context, name string)
 }
 
 func (s *TraefikRouterService) dynamicConfigPath() string {
+	if cfgDir := s.resolver.ConfigDir(); cfgDir != "" {
+		candidate := filepath.Join(cfgDir, "traefik", "dynamic.yml")
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			return candidate
+		}
+	}
+	candidates := []string{
+		filepath.Join(s.baseDir, "config", "traefik", "dynamic.yml"),
+		filepath.Join(s.baseDir, "packages", "platform-orchestrator", "config", "traefik", "dynamic.yml"),
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
 	return filepath.Join(s.baseDir, "config", "traefik", "dynamic.yml")
 }
 

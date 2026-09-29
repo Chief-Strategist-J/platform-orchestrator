@@ -958,7 +958,53 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TraefikRouterActionResponse'
+  /dns/records:
+    get:
+      summary: List Discovered Local Platform Domains
+      operationId: listDnsRecords
+      responses:
+        '200':
+          description: Discovered DNS records list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DnsRecordsListResponse'
+        '500':
+          $ref: '#/components/responses/StandardErrorResponse'
+
+  /dns/sync:
+    post:
+      summary: Synchronize Local Platform Domains to Hosts Resolver
+      operationId: syncDnsHosts
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DnsSyncRequest'
+      responses:
+        '200':
+          description: Synchronization result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DnsSyncResponse'
+        '500':
+          $ref: '#/components/responses/StandardErrorResponse'
+
+  /dns/check:
+    get:
+      summary: Verify DNS Domain Resolution Status
+      operationId: checkDnsResolution
+      responses:
+        '200':
+          description: Domain resolution diagnostic report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DnsCheckResponse'
+        '500':
+          $ref: '#/components/responses/StandardErrorResponse'
 
 components:
   responses:
@@ -2156,3 +2202,102 @@ components:
           $ref: '#/components/schemas/MetaEnvelope'
         data:
           $ref: '#/components/schemas/TraefikTCPRouterDefinition'
+
+    DnsRecord:
+      type: object
+      required:
+        - domain
+        - ip
+      properties:
+        domain:
+          type: string
+          example: grafana.llmobs.local
+        ip:
+          type: string
+          example: 127.0.0.1
+        source:
+          type: string
+          example: traefik
+        isSynced:
+          type: boolean
+
+    DnsRecordsListResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/DnsRecord'
+
+    DnsSyncRequest:
+      type: object
+      properties:
+        targetIp:
+          type: string
+          default: 127.0.0.1
+        customDomains:
+          type: array
+          items:
+            type: string
+        dryRun:
+          type: boolean
+          default: false
+
+    DnsSyncResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            syncedCount:
+              type: integer
+            hostsPath:
+              type: string
+            domains:
+              type: array
+              items:
+                type: string
+            message:
+              type: string
+            success:
+              type: boolean
+
+    DnsCheckResult:
+      type: object
+      required:
+        - domain
+        - isResolvable
+      properties:
+        domain:
+          type: string
+        resolvedIp:
+          type: string
+        isResolvable:
+          type: boolean
+        latencyMs:
+          type: number
+        error:
+          type: string
+
+    DnsCheckResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/DnsCheckResult'

@@ -40,10 +40,11 @@ func NewTraefikClient(opts types.ClientOptions, resolver *paths.PathResolver) *T
 		baseURL = os.Getenv("TRAEFIK_API_URL")
 	}
 	if baseURL == "" && resolver != nil {
-		baseURL = resolver.ResolveEnvOrConfig("TRAEFIK_API_URL", "http://localhost:8080")
+		dashboardPort := resolver.ResolveEnvOrConfig("PORT_TRAEFIK_DASHBOARD", "31411")
+		baseURL = fmt.Sprintf("http://localhost:%s", dashboardPort)
 	}
 	if baseURL == "" {
-		baseURL = "http://localhost:8080"
+		baseURL = "http://localhost:31411"
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 

@@ -37,6 +37,8 @@ import (
 	cloudflareService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/cloudflare/services"
 	configSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/config/schema"
 	configService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/config/services"
+	dnsService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/dns/services"
+	dnsTypes "github.com/Chief-Strategist-J/platform-orchestrator/src/features/dns/types"
 	gdprSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/gdpr/schema"
 	gdprService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/gdpr/services"
 	grafanaSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/schema"
@@ -75,6 +77,7 @@ type OrchestratorHandler struct {
 	grafanaService    *grafanaService.GrafanaService
 	servicesService   *servicesService.ServicesService
 	traefikService    *traefikService.TraefikService
+	dnsService        *dnsService.DNSService
 	baseDir           string
 }
 
@@ -93,6 +96,7 @@ func NewOrchestratorHandler(
 	grafanaSvc *grafanaService.GrafanaService,
 	servicesSvc *servicesService.ServicesService,
 	traefikSvc *traefikService.TraefikService,
+	dnsSvc *dnsService.DNSService,
 	baseDir string,
 ) *OrchestratorHandler {
 	return &OrchestratorHandler{
@@ -110,6 +114,7 @@ func NewOrchestratorHandler(
 		grafanaService:    grafanaSvc,
 		servicesService:   servicesSvc,
 		traefikService:    traefikSvc,
+		dnsService:        dnsSvc,
 		baseDir:           baseDir,
 	}
 }
@@ -1039,4 +1044,53 @@ func (h *OrchestratorHandler) HandleDeleteTraefikTCPRouter(w http.ResponseWriter
 	}
 	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
 }
+
+func (h *OrchestratorHandler) HandleListDnsRecords(w http.ResponseWriter, r *http.Request) {
+	hostsPath := r.URL.Query().Get("hostsFile")
+	records, err := h.dnsService.ListRecords(r.Context(), hostsPath)
+	if err != nil {
+		h.writeJSON(w, http.StatusInternalServerError, types.NewErrorResponse[any]("ERR_DNS_RECORDS_LIST", err.Error(), "dns", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(records, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleSyncDnsHosts(w http.ResponseWriter, r *http.Request) {
+	var body dnsTypes.SyncOptions
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
+			return
+		}
+	}
+	res, err := h.dnsService.SyncHosts(r.Context(), body)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_DNS_SYNC", err.Error(), "dns", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleCheckDnsResolution(w http.ResponseWriter, r *http.Request) {
+	var domains []string
+	if r.Method == http.MethodPost && r.ContentLength > 0 {
+		var body struct {
+			Domains []string `json:"domains"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+			domains = body.Domains
+		}
+	}
+	if len(domains) == 0 {
+		domainsParam := r.URL.Query().Get("domains")
+		if domainsParam != "" {
+			domains = strings.Split(domainsParam, ",")
+		}
+	}
+
+	hostsPath := r.URL.Query().Get("hostsFile")
+	results := h.dnsService.CheckResolution(r.Context(), domains, hostsPath)
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(results, "v1"))
+}
+
 
