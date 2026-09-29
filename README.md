@@ -24,6 +24,7 @@ packages/platform-orchestrator/
 │   │   ├── certs/           # Pure Go self-signed X.509 certificate generation
 │   │   ├── cloudflare/      # Cloudflare Tunnel ingress management
 │   │   ├── config/          # Dynamic resource limits, CPU/memory & network tuning
+│   │   ├── dns/             # Domain discovery, atomic /etc/hosts sync, and resolution probe engine
 │   │   ├── gdpr/            # GDPR/CCPA data erasure across databases
 │   │   ├── grafana/         # Dynamic datasources, dashboards, unified alerting, and contact points
 │   │   ├── health/          # Concurrent TCP/HTTP diagnostic health probes with backoff
@@ -32,7 +33,8 @@ packages/platform-orchestrator/
 │   │   ├── scale/           # Stateless service & simulated compute node scaling
 │   │   ├── services/        # Dynamic external services catalog & connectivity probe engine
 │   │   ├── setup/           # Full 7-step bootstrapping pipeline with credential prompts
-│   │   └── stack/           # Profile resolution, storage, self-healing, and compose lifecycle
+│   │   ├── stack/           # Profile resolution, storage, self-healing, and compose lifecycle
+│   │   └── traefik/         # Dynamic ingress routing, middlewares, TLS certs, and overview diagnostics
 │   ├── infra/               # Infrastructure adapters (Docker Engine, OTel tracing)
 │   └── shared/              # Hexagonal port interfaces, path resolver, and API envelopes
 └── tests/                   # Unit and integration test suites
@@ -575,7 +577,149 @@ Scale stateless services or provision simulated worker nodes.
 
 ---
 
-### 12. REST API Daemon (`server`)
+### 12. Traefik Ingress Gateway Management (`traefik`)
+
+Manage and inspect dynamic Traefik ingress routing, load balancer services, middleware chains, and gateway health.
+
+```bash
+./bin/llmobs traefik ping \
+  # ── API ENDPOINT & TIMEOUT ────────────────────────────────────────────────
+  [--url=http://localhost:31411] \
+  # String: Base URL of Traefik management API. Default: "http://localhost:31411".
+  [--timeout=10]
+  # Integer: HTTP client timeout in seconds. Default: 10.
+  #
+  # Aliases: status, health.
+```
+
+```bash
+./bin/llmobs traefik overview
+# Displays aggregate counts of active HTTP/TCP routers, services, and middlewares with error/warning counts.
+```
+
+```bash
+./bin/llmobs traefik entrypoints
+# Lists all active network entrypoints and their port bindings (e.g. web: :80, websecure: :443, tcp-db: :31420).
+```
+
+```bash
+./bin/llmobs traefik router list
+# Lists all HTTP routers with their matching rules, target services, and attached entrypoints.
+```
+
+```bash
+./bin/llmobs traefik router get <NAME>
+# Fetches complete JSON configuration of a specific HTTP router.
+# Example: ./bin/llmobs traefik router get grafana-router
+```
+
+```bash
+./bin/llmobs traefik router add <NAME> \
+  # ── ROUTING RULE EXPRESSION ────────────────────────────────────────────────
+  --rule="Host(\`app.llmobs.local\`) && PathPrefix(\`/api\`)" \
+  # String (required): Traefik match rule expression (Host, PathPrefix, Headers, etc.).
+  --service="app-service" \
+  # String (required): Target backend load balancer service name.
+  --entrypoints="websecure" \
+  # String slice: EntryPoints to attach to the router. Default: ["websecure"].
+  --middlewares="auth-mw,rate-limit-mw"
+  # String slice (optional): Middleware chains to attach to this router.
+  #
+  # Example:
+  #   ./bin/llmobs traefik router add custom-app --rule "Host(\`custom.llmobs.local\`)" --service "custom-svc"
+```
+
+```bash
+./bin/llmobs traefik router delete <NAME>
+# Removes an HTTP router from dynamic configuration (config/traefik/dynamic.yml).
+# Aliases: rm.
+# Example: ./bin/llmobs traefik router delete custom-app
+```
+
+```bash
+./bin/llmobs traefik services
+# Lists backend load balancer services, health statuses, and server URL endpoints.
+```
+
+```bash
+./bin/llmobs traefik middlewares
+# Lists registered security, retry, and rate-limiting middlewares.
+```
+
+```bash
+./bin/llmobs traefik tcp list
+# Lists all active TCP/gRPC routers and their HostSNI rules.
+```
+
+```bash
+./bin/llmobs traefik tcp add <NAME> \
+  --rule="HostSNI(\`alloydb.llmobs.local\`)" \
+  --service="alloydb-tcp-svc" \
+  --entrypoints="tcp-db"
+# Registers or updates a TCP/gRPC router in dynamic configuration.
+```
+
+```bash
+./bin/llmobs traefik tcp delete <NAME>
+# Removes a TCP router from dynamic configuration.
+```
+
+---
+
+### 13. DNS Discovery & `/etc/hosts` Synchronization (`dns`)
+
+Discover platform routing domains, measure DNS resolution latency, and safely persist local records into `/etc/hosts` using demarcated blocks.
+
+```bash
+./bin/llmobs dns list \
+  # ── TARGET HOSTS FILE & OUTPUT ─────────────────────────────────────────────
+  [--hosts-file=/etc/hosts] \
+  # String: Path to hosts file. Default: dynamic config or "/etc/hosts".
+  [--json]
+  # Boolean: Formats output as structured JSON instead of tabular text.
+```
+
+```bash
+./bin/llmobs dns sync \
+  # ── SYNC PARAMETERS ────────────────────────────────────────────────────────
+  --ip=127.0.0.1 \
+  # IPv4/IPv6 string: Target IP address to associate with discovered platform domains. Default: 127.0.0.1.
+  [--dry-run] \
+  # Boolean: Simulates modifications without mutating the target hosts file.
+  [--domains=grafana.local,alloydb.local] \
+  # String slice: Additional custom domain names to append to the sync block.
+  [--hosts-file=/etc/hosts] \
+  # String: Target hosts file path.
+  [--json]
+  # Boolean: Formats sync result report as JSON.
+  #
+  # Examples:
+  #   sudo ./bin/llmobs dns sync
+  #   ./bin/llmobs dns sync --dry-run
+  #   sudo ./bin/llmobs dns sync --ip 192.168.1.100 --domains extra.local
+```
+
+```bash
+./bin/llmobs dns check [domains...] \
+  # ── VERIFICATION SCOPE ─────────────────────────────────────────────────────
+  [--hosts-file=/etc/hosts] \
+  [--json]
+  # Measures DNS query round-trip latency and verifies IP reachability.
+  # Aliases: test, probe.
+  #
+  # Examples:
+  #   ./bin/llmobs dns check
+  #   ./bin/llmobs dns check grafana.llmobs.local clickhouse.llmobs.local
+```
+
+```bash
+./bin/llmobs dns discover
+# Prints all platform domains discovered across Traefik routing rules and configured services.
+```
+
+---
+
+### 14. REST API Daemon (`server`)
 
 Run the orchestrator as a background daemon exposing the HTTP REST API.
 
@@ -614,6 +758,17 @@ Run the orchestrator as a background daemon exposing the HTTP REST API.
 | **Contact Points** | `GET` / `POST` | `/api/v1/grafana/contact-points` | List / Add contact point |
 | **Config** | `GET` / `PUT` | `/api/v1/config` | Read / Update resource limits |
 | **Compliance** | `POST` | `/api/v1/gdpr/erasure` | GDPR data erasure |
+| **Traefik Ingress** | `GET` | `/api/v1/traefik/overview` | Gateway health & active resource summary |
+| **Traefik Ingress** | `GET` | `/api/v1/traefik/entrypoints` | Active port and protocol bindings |
+| **Traefik Ingress** | `GET` / `POST` | `/api/v1/traefik/routers` | List / Save HTTP routing rule |
+| **Traefik Ingress** | `GET` / `DELETE` | `/api/v1/traefik/routers/:name` | Inspect / Remove HTTP routing rule |
+| **Traefik Ingress** | `GET` | `/api/v1/traefik/services` | List HTTP load balancer services |
+| **Traefik Ingress** | `GET` | `/api/v1/traefik/middlewares` | List active middleware pipeline configs |
+| **Traefik Ingress** | `GET` / `POST` | `/api/v1/traefik/tcp/routers` | List / Save TCP ingress routing rule |
+| **Traefik Ingress** | `DELETE` | `/api/v1/traefik/tcp/routers/:name` | Remove TCP ingress routing rule |
+| **DNS Management** | `GET` | `/api/v1/dns/records` | Discover configured domain records |
+| **DNS Management** | `POST` | `/api/v1/dns/sync` | Atomically synchronize /etc/hosts file |
+| **DNS Management** | `GET` / `POST` | `/api/v1/dns/check` | Probe DNS resolution & IP reachability |
 
 All responses conform to the standard open envelope:
 

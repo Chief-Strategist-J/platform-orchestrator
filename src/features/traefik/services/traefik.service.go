@@ -6,6 +6,7 @@ ALGORITHM BLUEPRINT (TraefikService):
 2. Direct Access: Exposes sub-services directly for fine-grained dependency injection and testing.
 3. Invariants:
    - Zero inline comments inside function bodies.
+   - Preserves distributed tracing contexts across all delegates.
 */
 package services
 
@@ -67,6 +68,10 @@ func (s *TraefikService) ListHTTPServices(ctx context.Context, opts types.Client
 	return s.Routers.ListHTTPServices(ctx, opts)
 }
 
+func (s *TraefikService) GetHTTPService(ctx context.Context, opts types.ClientOptions, name string) (*schema.ServiceDefinition, error) {
+	return s.Routers.GetHTTPService(ctx, opts, name)
+}
+
 func (s *TraefikService) ListMiddlewares(ctx context.Context, opts types.ClientOptions) ([]schema.MiddlewareDefinition, error) {
 	return s.Middlewares.List(ctx, opts)
 }
@@ -75,10 +80,22 @@ func (s *TraefikService) ListTCPRouters(ctx context.Context, opts types.ClientOp
 	return s.Routers.ListTCPRouters(ctx, opts)
 }
 
+func (s *TraefikService) GetTCPRouter(ctx context.Context, opts types.ClientOptions, name string) (*schema.TCPRouterDefinition, error) {
+	return s.Routers.GetTCPRouter(ctx, opts, name)
+}
+
 func (s *TraefikService) SaveTCPRouter(ctx context.Context, router schema.TCPRouterDefinition) (*types.RouterOperationResult, error) {
 	return s.Routers.SaveTCPRouter(ctx, router)
 }
 
 func (s *TraefikService) DeleteTCPRouter(ctx context.Context, name string) (*types.RouterOperationResult, error) {
 	return s.Routers.DeleteTCPRouter(ctx, name)
+}
+
+func (s *TraefikService) ListTCPServices(ctx context.Context, opts types.ClientOptions) ([]schema.ServiceDefinition, error) {
+	return s.Routers.ListTCPServices(ctx, opts)
+}
+
+func (s *TraefikService) GetTCPService(ctx context.Context, opts types.ClientOptions, name string) (*schema.ServiceDefinition, error) {
+	return s.Routers.GetTCPService(ctx, opts, name)
 }
