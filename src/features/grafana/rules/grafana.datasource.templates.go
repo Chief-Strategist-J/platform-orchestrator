@@ -1,13 +1,13 @@
 /*
-Package rules provides a declarative template registry for Grafana platform datasource generation.
+Package rules provides a declarative, config-driven template registry for Grafana platform datasources.
 
-ALGORITHM BLUEPRINT (DatasourceTemplateRegistry):
-1. Registry Pattern: Maps service names/aliases to declarative template builder functions.
-2. Dynamic Environment Resolution: Builders retrieve dynamic host, port, database, and credentials via PathResolver.
-3. Extensibility: New datasources can be registered at runtime without modifying service switch/case statements.
+ALGORITHM BLUEPRINT (DatasourceDefinitionTable):
+1. Declarative Data Table: All built-in platform datasources declared as static configuration entries (Rule 3: Rules as Data).
+2. Dynamic Environment Resolution: Resolves environment overrides via PathResolver and os.Getenv without procedural branching.
+3. Registry Pattern: Maps service aliases to declarative definitions for O(1) resolution.
 4. Invariants:
    - Zero inline comments inside function bodies.
-   - Lookup is case-insensitive and supports multiple aliases per service type.
+   - Adding a new datasource requires only adding an entry to BuiltinDatasourceDefinitions.
 */
 package rules
 
@@ -21,28 +21,179 @@ import (
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
 )
 
-type DatasourceTemplateBuilder func(resolver *paths.PathResolver) schema.DatasourcePayload
+type DatasourceDefinition struct {
+	Aliases      []string
+	UID          string
+	Name         string
+	Type         string
+	Access       string
+	URLPattern   string
+	HostEnvKey   string
+	HostDefault  string
+	PortEnvKey   string
+	PortDefault  string
+	UserEnvKey   string
+	UserDefault  string
+	PassEnvKey   string
+	PassDefault  string
+	DBEnvKey     string
+	DBDefault    string
+	IsDefault    bool
+	JSONDataFunc func(host, port, db string) map[string]interface{}
+}
+
+var BuiltinDatasourceDefinitions = []DatasourceDefinition{
+	{
+		Aliases:     []string{"alloydb", "postgres", "postgresql"},
+		UID:         "ds-alloydb-platform",
+		Name:        "AlloyDB-Ledger",
+		Type:        "postgres",
+		Access:      "proxy",
+		URLPattern:  "%s:%s",
+		HostEnvKey:  "ALLOYDB_HOST",
+		HostDefault: "localhost",
+		PortEnvKey:  "ALLOYDB_PORT",
+		PortDefault: "31420",
+		UserEnvKey:  "ALLOYDB_USER",
+		UserDefault: "postgres",
+		PassEnvKey:  "ALLOYDB_PASSWORD",
+		PassDefault: "postgres",
+		DBEnvKey:    "ALLOYDB_DB",
+		DBDefault:   "llmobs",
+		IsDefault:   false,
+		JSONDataFunc: func(_, _, _ string) map[string]interface{} {
+			return map[string]interface{}{
+				"sslmode":         "disable",
+				"postgresVersion": 1500,
+				"maxOpenConns":    20,
+				"maxIdleConns":    5,
+				"connMaxLifetime": 14400,
+			}
+		},
+	},
+	{
+		Aliases:     []string{"clickhouse", "clickhouse-analytics"},
+		UID:         "ds-clickhouse-analytics",
+		Name:        "ClickHouse-Analytics",
+		Type:        "grafana-clickhouse-datasource",
+		Access:      "proxy",
+		URLPattern:  "http://%s:%s",
+		HostEnvKey:  "CLICKHOUSE_HOST",
+		HostDefault: "localhost",
+		PortEnvKey:  "CLICKHOUSE_PORT",
+		PortDefault: "31421",
+		UserEnvKey:  "CLICKHOUSE_USER",
+		UserDefault: "default",
+		PassEnvKey:  "CLICKHOUSE_PASSWORD",
+		PassDefault: "",
+		DBEnvKey:    "CLICKHOUSE_DB",
+		DBDefault:   "llmobs",
+		IsDefault:   false,
+		JSONDataFunc: func(host, _, db string) map[string]interface{} {
+			return map[string]interface{}{
+				"port":            31421,
+				"server":          host,
+				"defaultDatabase": db,
+				"protocol":        "http",
+			}
+		},
+	},
+	{
+		Aliases:     []string{"redis", "redis-ledger"},
+		UID:         "ds-redis-ledger",
+		Name:        "Redis-Ledger",
+		Type:        "redis-datasource",
+		Access:      "proxy",
+		URLPattern:  "redis://%s:%s",
+		HostEnvKey:  "REDIS_HOST",
+		HostDefault: "localhost",
+		PortEnvKey:  "REDIS_PORT",
+		PortDefault: "31413",
+		PassEnvKey:  "REDIS_PASSWORD",
+		PassDefault: "",
+		IsDefault:   false,
+		JSONDataFunc: func(_, _, _ string) map[string]interface{} {
+			return map[string]interface{}{
+				"poolSize": 5,
+				"timeout":  10,
+			}
+		},
+	},
+	{
+		Aliases:     []string{"tempo", "tempo-traces"},
+		UID:         "ds-tempo-traces",
+		Name:        "Tempo-Traces",
+		Type:        "tempo",
+		Access:      "proxy",
+		URLPattern:  "http://%s:%s",
+		HostEnvKey:  "TEMPO_HOST",
+		HostDefault: "localhost",
+		PortEnvKey:  "TEMPO_PORT",
+		PortDefault: "31416",
+		IsDefault:   true,
+		JSONDataFunc: func(_, _, _ string) map[string]interface{} {
+			return map[string]interface{}{
+				"tracesToLogs": map[string]interface{}{
+					"datasourceUid": "ds-clickhouse-analytics",
+				},
+			}
+		},
+	},
+	{
+		Aliases:     []string{"prometheus", "prometheus-metrics"},
+		UID:         "ds-prometheus-metrics",
+		Name:        "Prometheus",
+		Type:        "prometheus",
+		Access:      "proxy",
+		URLPattern:  "http://%s:%s",
+		HostEnvKey:  "PROMETHEUS_HOST",
+		HostDefault: "localhost",
+		PortEnvKey:  "PROMETHEUS_PORT",
+		PortDefault: "9090",
+		IsDefault:   false,
+		JSONDataFunc: func(_, _, _ string) map[string]interface{} {
+			return map[string]interface{}{
+				"httpMethod": "POST",
+			}
+		},
+	},
+	{
+		Aliases:     []string{"loki", "loki-logs"},
+		UID:         "ds-loki-logs",
+		Name:        "Loki-Logs",
+		Type:        "loki",
+		Access:      "proxy",
+		URLPattern:  "http://%s:%s",
+		HostEnvKey:  "LOKI_HOST",
+		HostDefault: "localhost",
+		PortEnvKey:  "LOKI_PORT",
+		PortDefault: "3100",
+		IsDefault:   false,
+	},
+}
 
 type DatasourceTemplateRegistry struct {
-	mu        sync.RWMutex
-	templates map[string]DatasourceTemplateBuilder
+	mu          sync.RWMutex
+	definitions map[string]DatasourceDefinition
 }
 
 var DefaultDatasourceRegistry = NewDatasourceTemplateRegistry()
 
 func NewDatasourceTemplateRegistry() *DatasourceTemplateRegistry {
 	r := &DatasourceTemplateRegistry{
-		templates: make(map[string]DatasourceTemplateBuilder),
+		definitions: make(map[string]DatasourceDefinition),
 	}
-	r.registerBuiltins()
+	for _, def := range BuiltinDatasourceDefinitions {
+		r.RegisterDefinition(def)
+	}
 	return r
 }
 
-func (r *DatasourceTemplateRegistry) Register(builder DatasourceTemplateBuilder, aliases ...string) {
+func (r *DatasourceTemplateRegistry) RegisterDefinition(def DatasourceDefinition) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, alias := range aliases {
-		r.templates[strings.ToLower(strings.TrimSpace(alias))] = builder
+	for _, alias := range def.Aliases {
+		r.definitions[strings.ToLower(strings.TrimSpace(alias))] = def
 	}
 }
 
@@ -50,151 +201,51 @@ func (r *DatasourceTemplateRegistry) Resolve(serviceName string, resolver *paths
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	builder, exists := r.templates[strings.ToLower(strings.TrimSpace(serviceName))]
+	def, exists := r.definitions[strings.ToLower(strings.TrimSpace(serviceName))]
 	if !exists {
 		return schema.DatasourcePayload{}, false
 	}
-	return builder(resolver), true
+
+	host := resolveEnv(resolver, def.HostEnvKey, def.HostDefault)
+	port := resolveEnv(resolver, def.PortEnvKey, def.PortDefault)
+	user := resolveEnv(resolver, def.UserEnvKey, def.UserDefault)
+	pass := resolveEnv(resolver, def.PassEnvKey, def.PassDefault)
+	db := resolveEnv(resolver, def.DBEnvKey, def.DBDefault)
+
+	urlStr := ""
+	if def.URLPattern != "" {
+		urlStr = fmt.Sprintf(def.URLPattern, host, port)
+	}
+
+	var jsonData map[string]interface{}
+	if def.JSONDataFunc != nil {
+		jsonData = def.JSONDataFunc(host, port, db)
+	}
+
+	var secureJSONData map[string]string
+	if pass != "" {
+		secureJSONData = map[string]string{"password": pass}
+	}
+
+	return schema.DatasourcePayload{
+		UID:            def.UID,
+		Name:           def.Name,
+		Type:           def.Type,
+		Access:         def.Access,
+		URL:            urlStr,
+		User:           user,
+		Database:       db,
+		BasicAuth:      false,
+		IsDefault:      def.IsDefault,
+		JSONData:       jsonData,
+		SecureJSONData: secureJSONData,
+	}, true
 }
 
-func (r *DatasourceTemplateRegistry) registerBuiltins() {
-	r.Register(func(resolver *paths.PathResolver) schema.DatasourcePayload {
-		host := resolveEnvOrResolver(resolver, "ALLOYDB_HOST", "localhost")
-		port := resolveEnvOrResolver(resolver, "ALLOYDB_PORT", "31420")
-		user := resolveEnvOrResolver(resolver, "ALLOYDB_USER", "postgres")
-		pass := resolveEnvOrResolver(resolver, "ALLOYDB_PASSWORD", "postgres")
-		db := resolveEnvOrResolver(resolver, "ALLOYDB_DB", "llmobs")
-
-		return schema.DatasourcePayload{
-			UID:       "ds-alloydb-platform",
-			Name:      "AlloyDB-Ledger",
-			Type:      "postgres",
-			Access:    "proxy",
-			URL:       fmt.Sprintf("%s:%s", host, port),
-			User:      user,
-			Database:  db,
-			BasicAuth: false,
-			IsDefault: false,
-			JSONData: map[string]interface{}{
-				"sslmode":         "disable",
-				"postgresVersion": 1500,
-				"maxOpenConns":    20,
-				"maxIdleConns":    5,
-				"connMaxLifetime": 14400,
-			},
-			SecureJSONData: map[string]string{
-				"password": pass,
-			},
-		}
-	}, "alloydb", "postgres", "postgresql")
-
-	r.Register(func(resolver *paths.PathResolver) schema.DatasourcePayload {
-		host := resolveEnvOrResolver(resolver, "CLICKHOUSE_HOST", "localhost")
-		port := resolveEnvOrResolver(resolver, "CLICKHOUSE_PORT", "31421")
-		user := resolveEnvOrResolver(resolver, "CLICKHOUSE_USER", "default")
-		pass := resolveEnvOrResolver(resolver, "CLICKHOUSE_PASSWORD", "")
-		db := resolveEnvOrResolver(resolver, "CLICKHOUSE_DB", "llmobs")
-
-		return schema.DatasourcePayload{
-			UID:       "ds-clickhouse-analytics",
-			Name:      "ClickHouse-Analytics",
-			Type:      "grafana-clickhouse-datasource",
-			Access:    "proxy",
-			URL:       fmt.Sprintf("http://%s:%s", host, port),
-			User:      user,
-			Database:  db,
-			BasicAuth: false,
-			IsDefault: false,
-			JSONData: map[string]interface{}{
-				"port":            31421,
-				"server":          host,
-				"defaultDatabase": db,
-				"protocol":        "http",
-			},
-			SecureJSONData: map[string]string{
-				"password": pass,
-			},
-		}
-	}, "clickhouse", "clickhouse-analytics")
-
-	r.Register(func(resolver *paths.PathResolver) schema.DatasourcePayload {
-		host := resolveEnvOrResolver(resolver, "REDIS_HOST", "localhost")
-		port := resolveEnvOrResolver(resolver, "REDIS_PORT", "31413")
-		pass := resolveEnvOrResolver(resolver, "REDIS_PASSWORD", "")
-
-		return schema.DatasourcePayload{
-			UID:       "ds-redis-ledger",
-			Name:      "Redis-Ledger",
-			Type:      "redis-datasource",
-			Access:    "proxy",
-			URL:       fmt.Sprintf("redis://%s:%s", host, port),
-			BasicAuth: false,
-			IsDefault: false,
-			JSONData: map[string]interface{}{
-				"poolSize": 5,
-				"timeout":  10,
-			},
-			SecureJSONData: map[string]string{
-				"password": pass,
-			},
-		}
-	}, "redis", "redis-ledger")
-
-	r.Register(func(resolver *paths.PathResolver) schema.DatasourcePayload {
-		host := resolveEnvOrResolver(resolver, "TEMPO_HOST", "localhost")
-		port := resolveEnvOrResolver(resolver, "TEMPO_PORT", "31416")
-
-		return schema.DatasourcePayload{
-			UID:       "ds-tempo-traces",
-			Name:      "Tempo-Traces",
-			Type:      "tempo",
-			Access:    "proxy",
-			URL:       fmt.Sprintf("http://%s:%s", host, port),
-			BasicAuth: false,
-			IsDefault: true,
-			JSONData: map[string]interface{}{
-				"tracesToLogs": map[string]interface{}{
-					"datasourceUid": "ds-clickhouse-analytics",
-				},
-			},
-		}
-	}, "tempo", "tempo-traces")
-
-	r.Register(func(resolver *paths.PathResolver) schema.DatasourcePayload {
-		host := resolveEnvOrResolver(resolver, "PROMETHEUS_HOST", "localhost")
-		port := resolveEnvOrResolver(resolver, "PROMETHEUS_PORT", "9090")
-
-		return schema.DatasourcePayload{
-			UID:       "ds-prometheus-metrics",
-			Name:      "Prometheus",
-			Type:      "prometheus",
-			Access:    "proxy",
-			URL:       fmt.Sprintf("http://%s:%s", host, port),
-			BasicAuth: false,
-			IsDefault: false,
-			JSONData: map[string]interface{}{
-				"httpMethod": "POST",
-			},
-		}
-	}, "prometheus", "prometheus-metrics")
-
-	r.Register(func(resolver *paths.PathResolver) schema.DatasourcePayload {
-		host := resolveEnvOrResolver(resolver, "LOKI_HOST", "localhost")
-		port := resolveEnvOrResolver(resolver, "LOKI_PORT", "3100")
-
-		return schema.DatasourcePayload{
-			UID:       "ds-loki-logs",
-			Name:      "Loki-Logs",
-			Type:      "loki",
-			Access:    "proxy",
-			URL:       fmt.Sprintf("http://%s:%s", host, port),
-			BasicAuth: false,
-			IsDefault: false,
-		}
-	}, "loki", "loki-logs")
-}
-
-func resolveEnvOrResolver(r *paths.PathResolver, key, fallback string) string {
+func resolveEnv(r *paths.PathResolver, key, fallback string) string {
+	if key == "" {
+		return fallback
+	}
 	if val := os.Getenv(key); val != "" {
 		return val
 	}

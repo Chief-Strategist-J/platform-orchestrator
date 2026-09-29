@@ -2,11 +2,10 @@
 Package services provides isolated, domain-specific services for Grafana lifecycle management.
 
 ALGORITHM BLUEPRINT (DashboardService):
-1. Dashboard Operations: Search, Get by UID, Save/Update, Import from file/URL, Export to JSON, Delete by UID.
-2. Endpoint Decoupling: Uses centralized typed endpoint constants from the endpoints package.
-3. Declarative Source Loaders: Delegates source loading to DashboardLoaderRegistry (Rule 1: Checking WHAT something is -> Registry).
-4. OpenTelemetry Tracing: Wraps every public operation in an attributed span.
-5. Invariants:
+1. Declarative Resource Descriptor: Configures Dashboard endpoints and validation rules as a data descriptor.
+2. Declarative Source Loaders: Delegates source loading to DashboardLoaderRegistry.
+3. OpenTelemetry Tracing: Wraps every public operation in an attributed span.
+4. Invariants:
    - Zero inline comments inside function bodies.
    - Non-200 responses return descriptive error envelopes.
 */
@@ -22,6 +21,7 @@ import (
 
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/client"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/endpoints"
+	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/rules"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/schema"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/features/grafana/types"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
@@ -29,10 +29,11 @@ import (
 )
 
 type DashboardService struct {
-	tracer   ports.TracerPort
-	baseDir  string
-	resolver *paths.PathResolver
-	loaders  *DashboardLoaderRegistry
+	tracer    ports.TracerPort
+	baseDir   string
+	resolver  *paths.PathResolver
+	loaders   *DashboardLoaderRegistry
+	dashDesc  ResourceDescriptor[schema.DashboardPayload]
 }
 
 func NewDashboardService(tracer ports.TracerPort, baseDir string) *DashboardService {
@@ -41,6 +42,13 @@ func NewDashboardService(tracer ports.TracerPort, baseDir string) *DashboardServ
 		baseDir:  baseDir,
 		resolver: paths.NewPathResolver(baseDir),
 		loaders:  NewDashboardLoaderRegistry(),
+		dashDesc: ResourceDescriptor[schema.DashboardPayload]{
+			ResourceName:       "Dashboard",
+			CollectionEndpoint: endpoints.EndpointDashboardsDB,
+			ItemEndpointFunc:   endpoints.BuildDashboardUIDPath,
+			SpanPrefix:         "grafana.dashboards",
+			RuleSet:            rules.DashboardRules,
+		},
 	}
 }
 
@@ -93,6 +101,10 @@ func (s *DashboardService) CreateOrUpdate(ctx context.Context, opts types.Client
 	ctx, endSpan := s.tracer.StartSpan(ctx, "grafana.dashboards.save")
 	defer endSpan()
 
+	if err := rules.ValidateDashboardPayload(payload); err != nil {
+		return nil, err
+	}
+
 	c := client.NewGrafanaClient(opts, s.resolver)
 	start := time.Now()
 
@@ -140,29 +152,18 @@ func (s *DashboardService) Import(ctx context.Context, opts types.ClientOptions,
 }
 
 func (s *DashboardService) Delete(ctx context.Context, opts types.ClientOptions, uid string) (*types.DashboardDeleteResult, error) {
-	ctx, endSpan := s.tracer.StartSpan(ctx, "grafana.dashboards.delete")
-	defer endSpan()
-
 	c := client.NewGrafanaClient(opts, s.resolver)
-	dashboardPath := endpoints.BuildDashboardUIDPath(uid)
-
-	var deleteResponse struct {
-		Title   string `json:"title"`
-		Message string `json:"message"`
-	}
-
-	_, err := c.Do(ctx, http.MethodDelete, dashboardPath, nil, &deleteResponse)
+	res, err := ExecuteDelete(ctx, c, s.tracer, s.dashDesc, uid)
 	if err != nil {
 		return &types.DashboardDeleteResult{
 			Title:   uid,
-			Message: fmt.Sprintf("Failed to delete dashboard: %v", err),
+			Message: res.Message,
 			Success: false,
 		}, err
 	}
-
 	return &types.DashboardDeleteResult{
-		Title:   deleteResponse.Title,
-		Message: deleteResponse.Message,
+		Title:   uid,
+		Message: res.Message,
 		Success: true,
 	}, nil
 }
