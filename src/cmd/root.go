@@ -63,6 +63,7 @@ import (
 	setupService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/setup/services"
 	stackSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/schema"
 	stackService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/services"
+	traefikService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/traefik/services"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/infra/docker"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/infra/observability"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/paths"
@@ -149,6 +150,7 @@ func Execute() {
 	configSvc := configService.NewConfigService(workspaceRoot, tracer)
 	grafanaSvc := grafanaService.NewGrafanaService(tracer, workspaceRoot)
 	servicesSvc := servicesService.NewServicesService(tracer, workspaceRoot)
+	traefikSvc := traefikService.NewTraefikService(tracer, workspaceRoot)
 
 	restHandler := rest.NewOrchestratorHandler(
 		stackSvc,
@@ -164,6 +166,7 @@ func Execute() {
 		configSvc,
 		grafanaSvc,
 		servicesSvc,
+		traefikSvc,
 		workspaceRoot,
 	)
 
@@ -588,6 +591,7 @@ Examples:
 	dashboardCmd := NewDashboardCommand(grafanaSvc)
 	alertCmd := NewAlertCommand(grafanaSvc)
 	serviceCmd := NewServiceCommand(servicesSvc, grafanaSvc)
+	traefikCmd := NewTraefikCommand(traefikSvc)
 
 
 	certsCmd := &cobra.Command{
@@ -974,6 +978,7 @@ Examples:
 		dashboardCmd,
 		alertCmd,
 		serviceCmd,
+		traefikCmd,
 	)
 
 	if err := rootCmd.Execute(); err != nil {

@@ -770,6 +770,196 @@ paths:
               schema:
                 $ref: '#/components/schemas/SingleDatasourceResponse'
 
+  /traefik/ping:
+    get:
+      summary: Test Traefik Ingress Gateway Availability
+      operationId: pingTraefik
+      responses:
+        '200':
+          description: Traefik ping response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraefikPingResponse'
+        '500':
+          $ref: '#/components/responses/StandardErrorResponse'
+
+  /traefik/overview:
+    get:
+      summary: Get Traefik Ingress Diagnostic Overview
+      operationId: getTraefikOverview
+      responses:
+        '200':
+          description: Overview diagnostic report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraefikOverviewResponse'
+        '500':
+          $ref: '#/components/responses/StandardErrorResponse'
+
+  /traefik/entrypoints:
+    get:
+      summary: List Configured Traefik EntryPoints
+      operationId: listTraefikEntryPoints
+      responses:
+        '200':
+          description: EntryPoints list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraefikEntrypointsResponse'
+
+  /traefik/routers:
+    get:
+      summary: List Active HTTP Routers
+      operationId: listTraefikHTTPRouters
+      responses:
+        '200':
+          description: List of HTTP routers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraefikRoutersListResponse'
+    post:
+      summary: Register or Update Dynamic HTTP Router
+      operationId: saveTraefikHTTPRouter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TraefikHTTPRouterDefinition'
+      responses:
+        '200':
+          description: Router registration status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraefikRouterActionResponse'
+
+  /traefik/routers/{name}:
+    get:
+      summary: Get HTTP Router Details by Name
+      operationId: getTraefikHTTPRouter
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: HTTP router definition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraefikRouterDetailResponse'
+        '404':
+          $ref: '#/components/responses/StandardErrorResponse'
+    delete:
+      summary: Remove Dynamic HTTP Router by Name
+      operationId: deleteTraefikHTTPRouter
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deletion result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraefikRouterActionResponse'
+
+  /traefik/services:
+    get:
+      summary: List Traefik Ingress Load Balancer Services
+      operationId: listTraefikHTTPServices
+      responses:
+        '200':
+          description: List of backend services
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraefikServicesListResponse'
+
+  /traefik/middlewares:
+    get:
+      summary: List Active Traefik Middlewares
+      operationId: listTraefikMiddlewares
+      responses:
+        '200':
+          description: List of middlewares
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraefikMiddlewaresListResponse'
+
+  /traefik/tcp/routers:
+    get:
+      summary: List Active TCP/gRPC Routers
+      operationId: listTraefikTCPRouters
+      responses:
+        '200':
+          description: List of TCP routers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraefikTCPRoutersListResponse'
+    post:
+      summary: Register or Update Dynamic TCP Router
+      operationId: saveTraefikTCPRouter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TraefikTCPRouterDefinition'
+      responses:
+        '200':
+          description: TCP router registration status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraefikRouterActionResponse'
+
+  /traefik/tcp/routers/{name}:
+    get:
+      summary: Get TCP Router Details by Name
+      operationId: getTraefikTCPRouter
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: TCP router definition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraefikTCPRouterDetailResponse'
+    delete:
+      summary: Remove Dynamic TCP Router by Name
+      operationId: deleteTraefikTCPRouter
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deletion result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraefikRouterActionResponse'
+
 components:
   responses:
     StandardErrorResponse:
@@ -1723,3 +1913,246 @@ components:
               type: number
             error:
               type: string
+
+    TraefikPingResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            status:
+              type: string
+              example: OK
+            isHealthy:
+              type: boolean
+            latencyMs:
+              type: number
+
+    TraefikOverviewResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            http:
+              type: object
+              properties:
+                routers:
+                  type: object
+                services:
+                  type: object
+                middlewares:
+                  type: object
+            tcp:
+              type: object
+              properties:
+                routers:
+                  type: object
+                services:
+                  type: object
+                middlewares:
+                  type: object
+            features:
+              type: object
+            providers:
+              type: array
+              items:
+                type: string
+
+    TraefikEntrypointsResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              address:
+                type: string
+
+    TraefikHTTPRouterDefinition:
+      type: object
+      required:
+        - name
+        - rule
+        - service
+      properties:
+        name:
+          type: string
+          example: grafana-router
+        rule:
+          type: string
+          example: Host(`grafana.llmobs.local`)
+        service:
+          type: string
+          example: grafana-service
+        entryPoints:
+          type: array
+          items:
+            type: string
+          default: ["websecure"]
+        middlewares:
+          type: array
+          items:
+            type: string
+        priority:
+          type: integer
+        tls:
+          type: object
+
+    TraefikRoutersListResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/TraefikHTTPRouterDefinition'
+
+    TraefikRouterDetailResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          $ref: '#/components/schemas/TraefikHTTPRouterDefinition'
+
+    TraefikRouterActionResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: object
+          properties:
+            name:
+              type: string
+            status:
+              type: string
+            message:
+              type: string
+            success:
+              type: boolean
+            latencyMs:
+              type: number
+
+    TraefikServicesListResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              type:
+                type: string
+              status:
+                type: string
+              servers:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    url:
+                      type: string
+
+    TraefikMiddlewaresListResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              type:
+                type: string
+              status:
+                type: string
+
+    TraefikTCPRouterDefinition:
+      type: object
+      required:
+        - name
+        - rule
+        - service
+      properties:
+        name:
+          type: string
+          example: alloydb-tcp-router
+        rule:
+          type: string
+          example: HostSNI(`alloydb.llmobs.local`)
+        service:
+          type: string
+          example: alloydb-service
+        entryPoints:
+          type: array
+          items:
+            type: string
+        tls:
+          type: object
+
+    TraefikTCPRoutersListResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/TraefikTCPRouterDefinition'
+
+    TraefikTCPRouterDetailResponse:
+      type: object
+      required:
+        - meta
+        - data
+      properties:
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+        data:
+          $ref: '#/components/schemas/TraefikTCPRouterDefinition'

@@ -347,6 +347,90 @@ func NewRouter(handler *OrchestratorHandler) http.Handler {
 		}
 	})
 
+	mux.HandleFunc("/api/v1/traefik/ping", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			handler.HandleTraefikPing(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+
+	mux.HandleFunc("/api/v1/traefik/overview", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			handler.HandleTraefikOverview(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+
+	mux.HandleFunc("/api/v1/traefik/entrypoints", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			handler.HandleTraefikEntryPoints(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+
+	mux.HandleFunc("/api/v1/traefik/routers", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			handler.HandleListTraefikHTTPRouters(w, r)
+			return
+		}
+		if r.Method == http.MethodPost {
+			handler.HandleSaveTraefikHTTPRouter(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+
+	mux.HandleFunc("/api/v1/traefik/routers/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handler.HandleGetTraefikHTTPRouter(w, r)
+		case http.MethodDelete:
+			handler.HandleDeleteTraefikHTTPRouter(w, r)
+		default:
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/v1/traefik/services", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			handler.HandleListTraefikHTTPServices(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+
+	mux.HandleFunc("/api/v1/traefik/middlewares", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			handler.HandleListTraefikMiddlewares(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+
+	mux.HandleFunc("/api/v1/traefik/tcp/routers", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			handler.HandleListTraefikTCPRouters(w, r)
+			return
+		}
+		if r.Method == http.MethodPost {
+			handler.HandleSaveTraefikTCPRouter(w, r)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	})
+
+	mux.HandleFunc("/api/v1/traefik/tcp/routers/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodDelete:
+			handler.HandleDeleteTraefikTCPRouter(w, r)
+		default:
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")

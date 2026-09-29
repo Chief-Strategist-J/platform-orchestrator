@@ -54,6 +54,9 @@ import (
 	setupService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/setup/services"
 	stackSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/schema"
 	stackService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/stack/services"
+	traefikSchema "github.com/Chief-Strategist-J/platform-orchestrator/src/features/traefik/schema"
+	traefikService "github.com/Chief-Strategist-J/platform-orchestrator/src/features/traefik/services"
+	traefikTypes "github.com/Chief-Strategist-J/platform-orchestrator/src/features/traefik/types"
 	"github.com/Chief-Strategist-J/platform-orchestrator/src/shared/types"
 )
 
@@ -71,6 +74,7 @@ type OrchestratorHandler struct {
 	configService     *configService.ConfigService
 	grafanaService    *grafanaService.GrafanaService
 	servicesService   *servicesService.ServicesService
+	traefikService    *traefikService.TraefikService
 	baseDir           string
 }
 
@@ -88,6 +92,7 @@ func NewOrchestratorHandler(
 	configSvc *configService.ConfigService,
 	grafanaSvc *grafanaService.GrafanaService,
 	servicesSvc *servicesService.ServicesService,
+	traefikSvc *traefikService.TraefikService,
 	baseDir string,
 ) *OrchestratorHandler {
 	return &OrchestratorHandler{
@@ -104,6 +109,7 @@ func NewOrchestratorHandler(
 		configService:     configSvc,
 		grafanaService:    grafanaSvc,
 		servicesService:   servicesSvc,
+		traefikService:    traefikSvc,
 		baseDir:           baseDir,
 	}
 }
@@ -892,3 +898,145 @@ func (h *OrchestratorHandler) HandleSyncServiceToGrafana(w http.ResponseWriter, 
 	}
 	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
 }
+
+func (h *OrchestratorHandler) HandleTraefikPing(w http.ResponseWriter, r *http.Request) {
+	opts := traefikTypes.ClientOptions{Timeout: 10 * time.Second}
+	res, err := h.traefikService.Ping(r.Context(), opts)
+	if err != nil {
+		h.writeJSON(w, http.StatusServiceUnavailable, types.NewErrorResponse[any]("ERR_TRAEFIK_UNREACHABLE", err.Error(), "traefik", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleTraefikOverview(w http.ResponseWriter, r *http.Request) {
+	opts := traefikTypes.ClientOptions{Timeout: 10 * time.Second}
+	res, err := h.traefikService.GetOverview(r.Context(), opts)
+	if err != nil {
+		h.writeJSON(w, http.StatusInternalServerError, types.NewErrorResponse[any]("ERR_TRAEFIK_OVERVIEW", err.Error(), "traefik", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleTraefikEntryPoints(w http.ResponseWriter, r *http.Request) {
+	opts := traefikTypes.ClientOptions{Timeout: 10 * time.Second}
+	res, err := h.traefikService.ListEntryPoints(r.Context(), opts)
+	if err != nil {
+		h.writeJSON(w, http.StatusInternalServerError, types.NewErrorResponse[any]("ERR_TRAEFIK_ENTRYPOINTS", err.Error(), "traefik", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleListTraefikHTTPRouters(w http.ResponseWriter, r *http.Request) {
+	opts := traefikTypes.ClientOptions{Timeout: 10 * time.Second}
+	res, err := h.traefikService.ListHTTPRouters(r.Context(), opts)
+	if err != nil {
+		h.writeJSON(w, http.StatusInternalServerError, types.NewErrorResponse[any]("ERR_TRAEFIK_ROUTERS", err.Error(), "traefik", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleGetTraefikHTTPRouter(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/api/v1/traefik/routers/")
+	if name == "" {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_PARAM", "missing router name", "name", "v1"))
+		return
+	}
+	opts := traefikTypes.ClientOptions{Timeout: 10 * time.Second}
+	res, err := h.traefikService.GetHTTPRouter(r.Context(), opts, name)
+	if err != nil {
+		h.writeJSON(w, http.StatusNotFound, types.NewErrorResponse[any]("ERR_ROUTER_NOT_FOUND", err.Error(), "name", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleSaveTraefikHTTPRouter(w http.ResponseWriter, r *http.Request) {
+	var body traefikSchema.HTTPRouterDefinition
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
+		return
+	}
+	res, err := h.traefikService.SaveHTTPRouter(r.Context(), body)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_ROUTER_SAVE", err.Error(), "router", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleDeleteTraefikHTTPRouter(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/api/v1/traefik/routers/")
+	if name == "" {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_PARAM", "missing router name", "name", "v1"))
+		return
+	}
+	res, err := h.traefikService.DeleteHTTPRouter(r.Context(), name)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_ROUTER_DELETE", err.Error(), "name", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleListTraefikHTTPServices(w http.ResponseWriter, r *http.Request) {
+	opts := traefikTypes.ClientOptions{Timeout: 10 * time.Second}
+	res, err := h.traefikService.ListHTTPServices(r.Context(), opts)
+	if err != nil {
+		h.writeJSON(w, http.StatusInternalServerError, types.NewErrorResponse[any]("ERR_TRAEFIK_SERVICES", err.Error(), "traefik", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleListTraefikMiddlewares(w http.ResponseWriter, r *http.Request) {
+	opts := traefikTypes.ClientOptions{Timeout: 10 * time.Second}
+	res, err := h.traefikService.ListMiddlewares(r.Context(), opts)
+	if err != nil {
+		h.writeJSON(w, http.StatusInternalServerError, types.NewErrorResponse[any]("ERR_TRAEFIK_MIDDLEWARES", err.Error(), "traefik", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleListTraefikTCPRouters(w http.ResponseWriter, r *http.Request) {
+	opts := traefikTypes.ClientOptions{Timeout: 10 * time.Second}
+	res, err := h.traefikService.ListTCPRouters(r.Context(), opts)
+	if err != nil {
+		h.writeJSON(w, http.StatusInternalServerError, types.NewErrorResponse[any]("ERR_TRAEFIK_TCP_ROUTERS", err.Error(), "traefik", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleSaveTraefikTCPRouter(w http.ResponseWriter, r *http.Request) {
+	var body traefikSchema.TCPRouterDefinition
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_BODY", err.Error(), "body", "v1"))
+		return
+	}
+	res, err := h.traefikService.SaveTCPRouter(r.Context(), body)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_TCP_ROUTER_SAVE", err.Error(), "router", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
+func (h *OrchestratorHandler) HandleDeleteTraefikTCPRouter(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/api/v1/traefik/tcp/routers/")
+	if name == "" {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_INVALID_PARAM", "missing tcp router name", "name", "v1"))
+		return
+	}
+	res, err := h.traefikService.DeleteTCPRouter(r.Context(), name)
+	if err != nil {
+		h.writeJSON(w, http.StatusBadRequest, types.NewErrorResponse[any]("ERR_TCP_ROUTER_DELETE", err.Error(), "name", "v1"))
+		return
+	}
+	h.writeJSON(w, http.StatusOK, types.NewSuccessResponse(res, "v1"))
+}
+
